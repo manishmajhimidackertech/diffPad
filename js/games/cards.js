@@ -85,49 +85,196 @@
     10: [[L, 17], [R, 17], [C, 27.3], [L, 37.7], [R, 37.7], [L, 58.3], [R, 58.3], [C, 68.7], [L, 79], [R, 79]],
   };
 
-  // Court colours in the cards.dll spirit: a robe, a trim, and gold.
-  var ROBE = { H: RED, D: "#e8b400", C: "#0040c0", S: "#202020" };
-  var TRIM = { H: "#e8b400", D: RED, C: "#e8b400", S: "#e8b400" };
+  // ---------------------------------------------------------------- courts
+  //
+  // Jack, Queen and King. Each is drawn once as the top half of the card --
+  // head, shoulders, and whatever the figure is holding -- and the card shows
+  // that half twice, the second copy turned through 180 degrees, the way a
+  // double-ended court card is printed. The figures are drawn in a 46 x 38.5
+  // window whose bottom edge is the middle of the card.
+  //
+  // At 71 x 96 a head is a dozen pixels wide, so the drawing is flat colour
+  // in bold shapes with a thin outline; anything finer turns to grey.
+
+  var INK = "#151515";
+  var SKIN = "#f8d5ab";
+  var GOLD = "#f6c40e";
+  var BLUE = "#1d4fc6";
+  var STEEL = "#dfe7f0";
+
+  // What each house wears: the robe, the panel down its front, the trim, and
+  // the colour of its hair.
+  var COURT = {
+    S: { robe: "#2b2b33", panel: RED, trim: GOLD, hair: "#4a3323" },
+    H: { robe: RED, panel: BLUE, trim: GOLD, hair: "#c9781e" },
+    D: { robe: GOLD, panel: RED, trim: BLUE, hair: "#f1cf5a" },
+    C: { robe: BLUE, panel: GOLD, trim: RED, hair: "#6b4426" },
+  };
+
+  var OUT = 'stroke="' + INK + '" stroke-width="0.6" stroke-linejoin="round"';
+  var FINE = 'fill="none" stroke="' + INK + '" stroke-width="0.5" stroke-linecap="round"';
+
+  function shape(d, fill, extra) {
+    return '<path d="' + d + '" fill="' + fill + '" ' + (extra || OUT) + "/>";
+  }
+
+  // Both sides of something drawn on the left.
+  function bothSides(markup) {
+    return markup + '<g transform="translate(71 0) scale(-1 1)">' + markup + "</g>";
+  }
+
+  function courtBody(rank, pal) {
+    var out = [];
+    // Shoulders and sleeves, with two bands of trim across each sleeve.
+    out.push(shape("M12.5 48V41.5q1.5-7 11-8.8L30 31h11l6.5 1.7q9.5 1.8 11 8.8V48z", pal.robe));
+    out.push(bothSides(shape("M12.5 43.5l9.8-10.2 2.3-.6L12.5 45.8zM12.5 48l14-14.6 1.8-.5L14.7 48z", pal.trim, 'stroke="none"')));
+    // The panel down the front, and the lozenges on it.
+    out.push(shape("M29.5 31h12l2.5 17h-17z", pal.panel));
+    out.push(shape("M35.5 35.5l2 2.7-2 2.7-2-2.7zM35.5 41.3l2 2.7-2 2.7-2-2.7z", pal.trim, 'stroke="' + INK + '" stroke-width="0.35"'));
+    out.push('<path d="M30.7 38.2l-1.4 9.8M40.3 38.2l1.4 9.8" ' + FINE + "/>");
+    if (rank === 13) {
+      // An ermine collar.
+      out.push(shape("M25 33.5q10.5 9 21 0l-3.5-3q-7 5-14 0z", "#fff"));
+      out.push('<path d="M28.5 34.2v1.3M32 36v1.3M35.5 36.6v1.3M39 36v1.3M42.5 34.2v1.3" stroke="' + INK + '" stroke-width="0.8" stroke-linecap="round"/>');
+    } else if (rank === 12) {
+      // An open neckline and a string of pearls.
+      out.push(shape("M30 30.5q5.5 8 11 0z", SKIN));
+      out.push('<g fill="#fff" stroke="' + INK + '" stroke-width="0.35"><circle cx="31.3" cy="33.3" r="0.9"/><circle cx="33.2" cy="35" r="0.9"/><circle cx="35.5" cy="35.7" r="0.9"/><circle cx="37.8" cy="35" r="0.9"/><circle cx="39.7" cy="33.3" r="0.9"/></g>');
+    } else {
+      // A turned-down collar.
+      out.push(bothSides(shape("M35.5 34.5l-6.5-4-2.5 3.3 6.5 3.7z", "#fff")));
+    }
+    // The band where the two halves of the card meet.
+    out.push(shape("M12.5 45.7h46V48h-46z", pal.trim, 'stroke="' + INK + '" stroke-width="0.5"'));
+    return out.join("");
+  }
+
+  // The face itself, drawn about (0, 0) looking a little to the right; the
+  // caller mirrors it for a figure that looks left.
+  function courtFace(rank, pal) {
+    var out = [];
+    var beard = rank === 13;
+    out.push('<path d="M-1.9-1.9h-2.2M1.3-1.9h2.3" ' + FINE + "/>");
+    out.push('<ellipse cx="-2.6" cy="-0.5" rx="0.85" ry="0.75" fill="' + INK + '"/><ellipse cx="2.9" cy="-0.5" rx="0.85" ry="0.75" fill="' + INK + '"/>');
+    out.push('<path d="M0.6-0.6l1 2.9-1.3.3" ' + FINE + "/>");
+    if (rank === 12) {
+      out.push('<circle cx="-3.4" cy="2" r="1.1" fill="#f4a08c" opacity="0.7"/><circle cx="3.9" cy="2" r="1" fill="#f4a08c" opacity="0.7"/>');
+      out.push(shape("M-1.2 4.2q.9-.7 1.6-.1.7-.6 1.6.1-1.6 1.5-3.2 0z", RED, 'stroke="none"'));
+    } else if (beard) {
+      out.push(shape("M-3.8 3.7q2.3-1.5 4.2-.3 1.9-1.2 4.2.3-2.2 1.2-4.2.5-2 .7-4.2-.5z", "#fff", 'stroke="' + INK + '" stroke-width="0.4"'));
+      out.push('<path d="M-.8 5.6h2.4" stroke="' + RED + '" stroke-width="0.8" stroke-linecap="round"/>');
+    } else {
+      out.push('<path d="M-1.2 4.1q1.5 1.1 3.1 0" fill="none" stroke="' + RED + '" stroke-width="0.8" stroke-linecap="round"/>');
+    }
+    return out.join("");
+  }
+
+  function courtHead(rank, pal, dir) {
+    var out = [];
+    var hair = pal.hair;
+    if (rank === 13) {
+      // Hair to the collar, then the head, then a beard over the jaw.
+      out.push(bothSidesAt(shape("M-5-4.5q-4.5 2.5-4 7.5.3 3 2.7 3.5L-5 2z", hair)));
+      out.push('<ellipse cx="0" cy="0" rx="6" ry="7" fill="' + SKIN + '" ' + OUT + "/>");
+      out.push(shape("M-6.1.8q-1 7.7 3.3 10.9L0 9.6l2.8 2.1Q7.1 8.5 6.1.8 4.3 4.5 0 4.2-4.3 4.5-6.1.8z", hair));
+    } else if (rank === 12) {
+      // Long hair behind, and a fringe.
+      out.push(bothSidesAt(shape("M-4-6q-6.5 2-5.8 9.5.4 4.5 2.3 7.5l4-1.5z", hair)));
+      out.push(shape("M-2.2 5h4.4v5h-4.4z", SKIN, 'stroke="none"'));
+      out.push('<ellipse cx="0" cy="0" rx="5.5" ry="6.7" fill="' + SKIN + '" ' + OUT + "/>");
+      out.push(shape("M-5.6-1.5q.3-5.5 5.6-5.6 5.3.1 5.6 5.6-2.6-3.3-5.6-3.3t-5.6 3.3z", hair));
+    } else {
+      // A page's bob, curling out at the bottom.
+      out.push(bothSidesAt(shape("M-4.5-5q-4.2 2.5-3.8 8 .2 3.5-1.2 4.5 3.5 1.2 5.3-1.5z", hair)));
+      out.push('<ellipse cx="0" cy="0" rx="5.7" ry="6.9" fill="' + SKIN + '" ' + OUT + "/>");
+      out.push(shape("M-5.8-1.8q2.5-3 5.8-3t5.8 3q-.3-4.5-5.8-4.7-5.5.2-5.8 4.7z", hair));
+    }
+    out.push('<g transform="scale(' + dir + ' 1)">' + courtFace(rank, pal) + "</g>");
+    if (rank === 13) {
+      // A tall crown: a jewelled band, five points, a cap inside it.
+      out.push(shape("M-6-8.5h12l-.5-4h-11z", RED, 'stroke="none"'));
+      out.push(shape("M-7-6v-2.8l-.8-5 3.5 3 1.9-3.9L0-10.8l2.4-3.9 1.9 3.9 3.5-3 -.8 5V-6z", GOLD));
+      out.push('<path d="M-7-8.3H7" ' + FINE + "/>");
+      out.push('<circle cx="-4" cy="-7.1" r="0.75" fill="' + RED + '"/><circle cx="0" cy="-7.1" r="0.75" fill="' + BLUE + '"/><circle cx="4" cy="-7.1" r="0.75" fill="' + RED + '"/>');
+    } else if (rank === 12) {
+      // A coronet with a pearl on each point.
+      out.push(shape("M-5.5-5.8v-2.2l-.7-3.3 3.2 2.3L0-12.5 3-9l3.2-2.3-.7 3.3v2.2z", GOLD));
+      out.push('<g fill="#fff" stroke="' + INK + '" stroke-width="0.35"><circle cx="-6.2" cy="-11.5" r="0.9"/><circle cx="0" cy="-12.9" r="0.9"/><circle cx="6.2" cy="-11.5" r="0.9"/></g>');
+      out.push('<circle cx="0" cy="-7.3" r="0.8" fill="' + pal.panel + '" stroke="' + INK + '" stroke-width="0.3"/>');
+    } else {
+      // A soft cap with a band and a plume swept back from the way he looks.
+      out.push(shape("M-7.3-4.5q-1.2-6.3 7.3-6.5 8.5.2 7.3 6.5-7.3-2.7-14.6 0z", pal.robe));
+      out.push(shape("M-7.3-4.5q7.3-2.7 14.6 0l-.3-1.9q-7-2.5-14 0z", pal.trim, 'stroke="' + INK + '" stroke-width="0.4"'));
+      out.push('<g transform="scale(' + -dir + ' 1)">' + shape("M3-9.5q3-5 7.5-3.3-1 .2-1.4 1.1 1.4-.2 1.9.8-4-.6-6 3.2z", "#fff") + "</g>");
+    }
+    return out.join("");
+  }
+
+  // The same, about the middle of the head rather than of the card.
+  function bothSidesAt(markup) {
+    return markup + '<g transform="scale(-1 1)">' + markup + "</g>";
+  }
+
+  // What the figure holds, and the hand that holds it.
+  function courtProp(rank, suit, pal) {
+    var hand = function (cx, cy) {
+      return '<ellipse cx="' + cx + '" cy="' + cy + '" rx="2.6" ry="2.1" fill="' + SKIN + '" ' + OUT + "/>";
+    };
+    if (rank === 13) {
+      if (suit === "D") {
+        // The King of Diamonds carries an axe.
+        return (
+          '<path d="M51 45.5V13" stroke="#7a4a1c" stroke-width="1.7" stroke-linecap="round"/>' +
+          shape("M51.8 14.5q5.5-1.5 5 5.5-.3 3.5-1.5 4.5-1-3.5-3.5-3.5z", STEEL) +
+          hand(51, 41.5)
+        );
+      }
+      return (
+        shape("M51.5 38V14.5l1.1-3 1.1 3V38z", STEEL) +
+        '<path d="M52.6 15v22" ' + FINE + ' opacity="0.45"/>' +
+        shape("M48.8 37.5h7.6v1.7h-7.6z", GOLD) +
+        shape("M51.6 39.2h2v6h-2z", "#7a4a1c") +
+        hand(52.6, 42)
+      );
+    }
+    if (rank === 12) {
+      // A flower in the colours of the house.
+      var petal = suit === "H" || suit === "D" ? RED : pal.trim === RED ? RED : "#fff";
+      return (
+        '<path d="M19 45.5q-1.6-9 0-18" fill="none" stroke="#0a7a2a" stroke-width="1.1"/>' +
+        shape("M18.4 36q-4-.5-4.5-4 3.5.3 4.5 4zM19.3 33.5q3.7-.8 4.2-4-3.3.5-4.2 4z", "#12a03a", 'stroke="#0a5a20" stroke-width="0.35"') +
+        '<g fill="' + petal + '" stroke="' + INK + '" stroke-width="0.4"><circle cx="19" cy="22.3" r="1.9"/><circle cx="21.6" cy="24.2" r="1.9"/><circle cx="20.6" cy="27.2" r="1.9"/><circle cx="17.4" cy="27.2" r="1.9"/><circle cx="16.4" cy="24.2" r="1.9"/></g>' +
+        '<circle cx="19" cy="25.1" r="1.5" fill="' + GOLD + '" stroke="' + INK + '" stroke-width="0.4"/>' +
+        hand(19, 41.5)
+      );
+    }
+    // The Jack carries a pike.
+    return (
+      '<path d="M53.2 45.5V17" stroke="#7a4a1c" stroke-width="1.5" stroke-linecap="round"/>' +
+      shape("M53.2 11l2.2 5-2.2 2.5-2.2-2.5z", STEEL) +
+      shape("M50.3 18.3h5.8v1.5h-5.8z", pal.trim, 'stroke="' + INK + '" stroke-width="0.4"') +
+      hand(53.2, 41.5)
+    );
+  }
+
+  // Which way each figure looks: 1 to the right, -1 to the left.
+  function courtFacing(card) {
+    var right = card.suit === "H" || card.suit === "S";
+    if (card.rank === 12) right = !right;
+    return right ? 1 : -1;
+  }
 
   function courtHalf(card) {
-    var robe = ROBE[card.suit];
-    var trim = TRIM[card.suit];
-    var s = 'stroke="#000" stroke-width="0.6"';
-    var out = [];
-    // Robe and shoulders.
-    out.push('<path d="M13 48V39q10-9 22.5-8 12.5-1 22.5 8v9z" fill="' + robe + '" ' + s + "/>");
-    out.push('<path d="M32 31h7v17h-7z" fill="' + trim + '" ' + s + "/>");
-    out.push('<path d="M26 33q9.5 7 19 0" fill="none" stroke="' + trim + '" stroke-width="2"/>');
-    // Hair, behind the head.
-    if (card.rank === 12) {
-      out.push('<path d="M27 20q-3 10 1 15h15q4-5 1-15z" fill="#e8b400" ' + s + "/>");
-    } else if (card.rank === 11) {
-      out.push('<path d="M28 20q-2 6 1 9h13q3-3 1-9z" fill="#8a4a10" ' + s + "/>");
-    }
-    // Head and face.
-    out.push('<ellipse cx="35.5" cy="24" rx="6" ry="7" fill="#ffd8a8" ' + s + "/>");
-    out.push('<path d="M33 23h1M37 23h1" stroke="#000" stroke-width="1.2"/>');
-    out.push('<path d="M34 28h3" stroke="' + RED + '" stroke-width="0.9"/>');
-    if (card.rank === 13) {
-      // Beard, and a tall crown.
-      out.push('<path d="M29.5 26q6 11 12 0q-2 3-6 3t-6-3z" fill="#f4f4f4" ' + s + "/>");
-      out.push('<path d="M28 18v-8l3.5 4 4-6 4 6 3.5-4v8z" fill="#e8b400" ' + s + "/>");
-      out.push('<path d="M31 16h1.5M35 15h1.5M39 16h1.5" stroke="' + RED + '" stroke-width="1.5"/>');
-      // A sword over the shoulder.
-      out.push('<path d="M50 46L52 14" stroke="#808080" stroke-width="2"/><path d="M48 18h7" stroke="#000" stroke-width="1.5"/>');
-    } else if (card.rank === 12) {
-      out.push('<path d="M29 18v-5l3 3 3.5-5 3.5 5 3-3v5z" fill="#e8b400" ' + s + "/>");
-      out.push('<path d="M34.8 14.5h1.4" stroke="#0040c0" stroke-width="1.6"/>');
-      // A flower.
-      out.push('<path d="M20 46L22 33" stroke="#008000" stroke-width="1.2"/><circle cx="22" cy="31" r="3" fill="' + RED + '" ' + s + "/>");
-    } else {
-      // A cap with a feather.
-      out.push('<path d="M28.5 19q7-11 14 0z" fill="' + robe + '" ' + s + "/>");
-      out.push('<path d="M41 13q6-6 9-1" fill="none" stroke="' + trim + '" stroke-width="1.6"/>');
-      out.push('<path d="M51 46L49 30" stroke="#8a4a10" stroke-width="2"/>');
-    }
-    out.push(pip(card.suit, 18.5, 15, 8, false, isRed(card.suit) ? RED : "#000"));
-    return out.join("");
+    var pal = COURT[card.suit];
+    var headY = card.rank === 13 ? 24.8 : 24;
+    return (
+      courtBody(card.rank, pal) +
+      courtProp(card.rank, card.suit, pal) +
+      '<g transform="translate(35.5 ' + headY + ')">' +
+      courtHead(card.rank, pal, courtFacing(card)) +
+      "</g>" +
+      pip(card.suit, 17.5, 14.7, 7.5, false, isRed(card.suit) ? RED : "#000")
+    );
   }
 
   var faceCache = {};

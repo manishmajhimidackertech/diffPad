@@ -672,6 +672,7 @@ fieldset.group95 legend {
   width: 32px;
   height: 32px;
   margin: 1px;
+  /* Drawn looking right; turned to look left. */
   transform: scaleX(-1);
 }
 .fc-king.right svg {
