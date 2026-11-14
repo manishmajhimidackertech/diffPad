@@ -404,11 +404,13 @@
       var gap = Math.max(6, Math.min(30, (W - 8 * 71) / 9));
       return {
         fit: fit,
+        // The cells and the home cells stand the same ten pixels in from the
+        // sides of the window as they do from the menu bar.
         cellX: function (i) {
-          return i * 72;
+          return 10 + i * 72;
         },
         homeX: function (i) {
-          return Math.round(W - (4 - i) * 72);
+          return Math.round(W - 10 - 71 - (3 - i) * 72);
         },
         colX: function (i) {
           return Math.round(gap + i * (71 + gap));
