@@ -191,11 +191,14 @@
     }
     out.push('<g transform="scale(' + dir + ' 1)">' + courtFace(rank, pal) + "</g>");
     if (rank === 13) {
-      // A tall crown: a jewelled band, five points, a cap inside it.
+      // A tall crown: a jewelled band, five points, a cap inside it,
+      // worn low on the brow.
+      out.push('<g transform="translate(0 1.7)">');
       out.push(shape("M-6-8.5h12l-.5-4h-11z", RED, 'stroke="none"'));
       out.push(shape("M-7-6v-2.8l-.8-5 3.5 3 1.9-3.9L0-10.8l2.4-3.9 1.9 3.9 3.5-3 -.8 5V-6z", GOLD));
       out.push('<path d="M-7-8.3H7" ' + FINE + "/>");
       out.push('<circle cx="-4" cy="-7.1" r="0.75" fill="' + RED + '"/><circle cx="0" cy="-7.1" r="0.75" fill="' + BLUE + '"/><circle cx="4" cy="-7.1" r="0.75" fill="' + RED + '"/>');
+      out.push("</g>");
     } else if (rank === 12) {
       // A coronet with a pearl on each point.
       out.push(shape("M-5.5-5.8v-2.2l-.7-3.3 3.2 2.3L0-12.5 3-9l3.2-2.3-.7 3.3v2.2z", GOLD));

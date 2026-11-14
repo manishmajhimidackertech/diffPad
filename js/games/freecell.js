@@ -348,7 +348,7 @@
       g = newGame(n);
       sel = null;
       ended = false;
-      win.setTitle("FreeCell Game #" + n);
+      win.setTitle("FreeCell");
       render();
     }
 
@@ -413,8 +413,9 @@
         colX: function (i) {
           return Math.round(gap + i * (71 + gap));
         },
-        top: 0,
-        colY: 96 + 22,
+        // The same room under the menu bar as the other games leave.
+        top: 10,
+        colY: 10 + 96 + 22,
         width: W,
         height: fit.height,
       };
