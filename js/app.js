@@ -2569,7 +2569,6 @@
       '<p class="dz-sub">Open the ' +
       label +
       " document</p>" +
-      '<p class="dz-kinds">.docx &middot; .doc &middot; .rtf &middot; .odt &middot; .txt &middot; .html</p>' +
       '<span class="btn95 dz-open"><span class="focus-ring">Open…</span></span>' +
       '<div class="dz-loading" style="display:none;"><span class="progress"></span>Reading document…</div>' +
       '<div class="dz-error" style="display:none;"></div>' +

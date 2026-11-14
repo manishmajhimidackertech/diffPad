@@ -52,7 +52,7 @@
    * so it has to know exactly where a page starts and ends; these fix every
    * height and inset that decides that.
    */
-  --gap: 34px; /* desktop between the two windows */
+  --gap: 12px; /* desktop between the two windows: the same as around them */
   --win-pad: 3px; /* window frame */
   --title-h: 18px;
   --menu-h: 20px;
@@ -740,10 +740,6 @@ u {
 .dropzone .dz-sub {
   margin: 0 0 4px;
 }
-.dropzone .dz-kinds {
-  margin: 6px 0 0;
-  color: var(--shadow);
-}
 .btn95 {
   display: inline-flex;
   align-items: center;
@@ -1061,7 +1057,7 @@ button.btn95 {
 
 @media (max-width: 760px) {
   :root {
-    --gap: 22px;
+    --gap: 6px;
   }
   .desktop {
     padding: 6px;
