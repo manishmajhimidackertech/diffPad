@@ -3,3 +3,7 @@ vendor/** -text
 
 # .docx files are zips.
 *.docx binary
+
+# So are the binary Word format and a packaged OpenDocument file.
+*.doc binary
+*.odt binary

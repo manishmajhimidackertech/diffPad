@@ -666,7 +666,7 @@
         "<b>Hearts</b><br/><br/>Avoid taking hearts (1 point each) and the Queen of Spades (13). " +
           "Take all of them and everyone else gets 26 instead. The game ends when someone reaches 100; " +
           "the lowest score wins.<br/><br/>Pauline, Michele and Ben are played by this page.<br/><br/>" +
-          "Part of docxDiff. Everything runs in this browser.",
+          "Part of diffPad. Everything runs in this browser.",
         { title: "About Hearts" },
       );
     }

@@ -711,7 +711,7 @@
         "<b>FreeCell</b><br/><br/>Move every card to the four home cells, building each suit up from the Ace. " +
           "On the table, build down in alternating colours. The four free cells each hold one card.<br/><br/>" +
           "Click a column, then where it should go -- or drag. Double-click a card to put it in a free cell.<br/><br/>" +
-          "Part of docxDiff. Everything runs in this browser.",
+          "Part of diffPad. Everything runs in this browser.",
         { title: "About FreeCell" },
       );
     }

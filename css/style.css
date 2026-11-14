@@ -1,5 +1,5 @@
 /*
- * docxDiff -- a Windows 95 desktop with one DiffPad window per document.
+ * diffPad -- a Windows 95 desktop with one diffPad window per document.
  *
  * Only system fonts are named and every icon is inline, so the page still
  * makes no network request of any kind.
@@ -423,30 +423,40 @@ u {
   column-gap: calc(var(--gap) + 2 * var(--edge) + var(--sbw));
   min-width: 0;
 }
-.doc-preview {
-  padding: 8px 16px 8px 18px;
+/* ---------------------------------------------------------------- the sheet */
+
+/*
+ * A document is drawn the way a word processor shows it: one white sheet with
+ * page margins, paragraphs set apart by space rather than by rules, tables
+ * with their grid, headings at their size. Every block sits in a .cell, and
+ * in the diff the cells of the two documents share the rows of one grid, so
+ * all of a paragraph's spacing is inside its cell.
+ */
+.doc-sheet {
+  --page-margin: 28px;
+  font-family: var(--doc-font);
+  font-size: 11.5pt;
+  line-height: 1.35;
+  color: #000;
 }
-.doc-preview > * {
-  padding: 3px 0;
-}
-.cell,
-.doc-preview > * {
+.cell {
+  padding: 0 var(--page-margin);
+  background: #fff;
   white-space: pre-wrap;
   word-wrap: break-word;
   overflow-wrap: anywhere;
   min-width: 0;
 }
-.cell {
-  padding: 6px 16px 6px 18px;
-  background: #fff;
-  border-bottom: 1px dotted #c8c8c8;
+/* The top and bottom margins of the page. */
+.diff-grid > .cell:nth-child(-n + 2),
+.doc-preview > .cell:first-child {
+  padding-top: 20px;
 }
-.doc-preview,
-.cell {
-  font-family: var(--doc-font);
-  font-size: 15px;
-  line-height: 1.45;
+.diff-grid > .cell:nth-last-child(-n + 2),
+.doc-preview > .cell:last-child {
+  padding-bottom: 28px;
 }
+/* Where the other document has a block and this one has nothing. */
 .cell.gap {
   background-color: #fff;
   background-image: repeating-conic-gradient(#e4e4e4 0 25%, #fff 0 50%);
@@ -457,7 +467,8 @@ u {
 }
 .cell.removed .block-p,
 .cell.removed .block-li,
-.cell.removed .block-heading {
+.cell.removed .block-heading,
+.cell.removed .row-cells {
   color: var(--removed-text);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
@@ -467,7 +478,8 @@ u {
 }
 .cell.added .block-p,
 .cell.added .block-li,
-.cell.added .block-heading {
+.cell.added .block-heading,
+.cell.added .row-cells {
   color: var(--added-text);
 }
 .cell.fmt-changed {
@@ -492,70 +504,133 @@ u {
 
 /* ---------------------------------------------------------------- blocks */
 
-.block-p {
-  margin: 0;
+/*
+ * A paragraph that states its own spacing, size or alignment carries them in
+ * its style attribute; what is here is what a paragraph gets when the
+ * document says nothing. An empty paragraph is a blank line, as it is on
+ * paper.
+ */
+.block-p,
+.block-heading,
+.block-li {
+  margin: 0 0 4pt;
+  min-height: 1.35em;
 }
 .block-heading {
+  margin-top: 10pt;
   font-weight: 700;
 }
 .block-heading.h1 {
-  font-size: 21px;
+  font-size: 16pt;
 }
 .block-heading.h2 {
-  font-size: 18px;
+  font-size: 14pt;
 }
-.block-heading.h3,
-.block-heading.h4,
-.block-heading.h5,
-.block-heading.h6 {
-  font-size: 16px;
+.block-heading.h3 {
+  font-size: 12pt;
+}
+/* A heading whose style gives it a size is drawn as that style has it. */
+.block-heading.styled {
+  font-weight: 400;
+  font-size: inherit;
 }
 .block-li {
   display: flex;
-  gap: 8px;
+  gap: 6pt;
   align-items: baseline;
 }
 .block-li .li-bullet {
   flex: none;
+  min-width: 12pt;
+  text-indent: 0;
+  white-space: nowrap;
 }
+.block-li .li-number {
+  min-width: 16pt;
+}
+.block-li .li-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Where the header, the footer, the notes and the comments begin. */
 .block-divider {
-  text-align: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 6px;
   color: var(--shadow);
   font-family: var(--ui-font);
   font-size: 10px;
+  line-height: 14px;
   letter-spacing: 0.06em;
-  padding: 2px 0;
+  white-space: nowrap;
 }
+.block-divider::before,
+.block-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px dashed var(--shadow);
+}
+.cell.sec-header,
+.cell.sec-footer {
+  color: #505050;
+}
+.cell.sec-footnote,
+.cell.sec-endnote,
+.cell.sec-comment {
+  font-size: 10pt;
+}
+
+/*
+ * A table. Each row is a block of its own, so that a row can be added or
+ * removed in the diff; consecutive rows share their borders and read as one
+ * grid.
+ */
 .row-cells {
   display: flex;
-  margin: 0 -16px 0 -18px;
+  border: 1px solid #000;
+  /* Over the bottom border of the row above, so the two are one line. */
+  margin-top: -1px;
+}
+/* A row is as tall as its taller side, and its borders go all the way down. */
+.cell.is-row {
+  display: flex;
+  flex-direction: column;
+}
+.cell.is-row > .row-cells {
+  flex: 1;
+}
+.cell.table-start {
+  padding-top: 4pt;
+}
+.cell.table-end {
+  padding-top: 8pt;
 }
 .row-cell {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
-  padding: 0 10px;
-  border-right: 1px solid var(--shadow);
+  padding: 2pt 5pt;
+  border-left: 1px solid #000;
 }
 .row-cell:first-child {
-  padding-left: 18px;
+  border-left: none;
 }
-.row-cell:last-child {
-  border-right: none;
-  padding-right: 16px;
-}
+
+/* The page's own labels, set apart from the document's text. */
 .sec-badge {
   display: inline-block;
-  margin-right: 7px;
-  padding: 0 4px;
+  margin-right: 6px;
   font-family: var(--ui-font);
-  font-size: 10px;
-  line-height: 14px;
+  font-size: 9px;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 12px;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: #000;
-  background: var(--face);
-  box-shadow: var(--raised);
-  vertical-align: 2px;
+  letter-spacing: 0.04em;
+  text-indent: 0;
+  color: var(--shadow);
+  vertical-align: 1px;
 }
 .fmt-tag {
   display: inline-block;
@@ -563,7 +638,10 @@ u {
   padding: 0 4px;
   font-family: var(--ui-font);
   font-size: 10px;
+  font-weight: 400;
+  font-style: normal;
   line-height: 14px;
+  text-indent: 0;
   color: #000;
   background: var(--tooltip);
   box-shadow: inset 0 0 0 1px #000;
@@ -572,12 +650,12 @@ u {
 }
 .inline-img {
   display: inline-block;
+  max-width: 100%;
   vertical-align: middle;
 }
 .inline-img img {
-  max-height: 60px;
-  max-width: 170px;
-  border: 1px solid var(--shadow);
+  max-width: 100%;
+  height: auto;
   vertical-align: middle;
 }
 .trk-ins {
@@ -661,6 +739,10 @@ u {
 }
 .dropzone .dz-sub {
   margin: 0 0 4px;
+}
+.dropzone .dz-kinds {
+  margin: 6px 0 0;
+  color: var(--shadow);
 }
 .btn95 {
   display: inline-flex;
@@ -766,7 +848,7 @@ button.btn95 {
   cursor: default;
 }
 .dz-error::before {
-  content: "docxDiff";
+  content: "diffPad";
   position: absolute;
   top: 3px;
   left: 3px;
@@ -984,33 +1066,9 @@ button.btn95 {
   .desktop {
     padding: 6px;
   }
-  .cell {
-    padding: 4px 8px 4px 10px;
-  }
-  .doc-preview {
-    padding: 4px 8px 4px 10px;
-  }
-  .doc-preview,
-  .cell {
-    font-size: 13px;
-  }
-  .block-heading.h1 {
-    font-size: 17px;
-  }
-  .block-heading.h2 {
-    font-size: 15px;
-  }
-  .row-cells {
-    margin: 0 -8px 0 -10px;
-  }
-  .row-cell {
-    padding: 0 6px;
-  }
-  .row-cell:first-child {
-    padding-left: 10px;
-  }
-  .row-cell:last-child {
-    padding-right: 8px;
+  .doc-sheet {
+    --page-margin: 12px;
+    font-size: 10.5pt;
   }
   .dropzone {
     margin: 8px;

@@ -39,7 +39,7 @@ const { spawnSync } = require("node:child_process");
 const ROOT = path.join(__dirname, "..", "..");
 
 const CANDIDATES = [
-  process.env.DOCXDIFF_BROWSER,
+  process.env.DIFFPAD_BROWSER,
   "C:/Program Files/Google/Chrome/Application/chrome.exe",
   "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -65,7 +65,7 @@ const APPENDED =
   '\n<script src="fixtures.js"></script>\n<script src="driver.js"></script>\n';
 
 function stage() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "docxdiff-browser-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "diffpad-browser-"));
 
   /*
    * `vendor/` is copied with its real name and shape. Flattening it would
@@ -98,6 +98,16 @@ function stage() {
       .readFileSync(path.join(ROOT, "tests", "fixtures", "report_v2.docx"))
       .toString("base64"),
   };
+  /* The same pair in each of the other formats the page opens. */
+  for (const kind of ["doc", "rtf", "odt", "fodt"]) {
+    for (const v of ["v1", "v2"]) {
+      fixtures[kind + "_" + v] = fs
+        .readFileSync(
+          path.join(ROOT, "tests", "fixtures", "report_" + v + "." + kind),
+        )
+        .toString("base64");
+    }
+  }
   fs.writeFileSync(
     path.join(dir, "fixtures.js"),
     "window.__fixtures = " + JSON.stringify(fixtures) + ";\n",
@@ -158,7 +168,7 @@ function run(browser, dir) {
 function main() {
   const browser = findBrowser();
   if (!browser) {
-    console.log("SKIP: no Chrome or Edge found. Set DOCXDIFF_BROWSER to one.");
+    console.log("SKIP: no Chrome or Edge found. Set DIFFPAD_BROWSER to one.");
     return 0;
   }
   console.log("browser: " + browser);

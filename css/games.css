@@ -19,7 +19,7 @@
   flex: none;
 }
 
-/* While a game is the active window, the DiffPad windows are not. */
+/* While a game is the active window, the diffPad windows are not. */
 body.game-focus #app .window .titlebar {
   background: var(--title-off);
   color: var(--face);

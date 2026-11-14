@@ -21,6 +21,12 @@ const vm = require("node:vm");
 const { loadApp, makeFile, ROOT } = require("./harness.js");
 const d = require("./docx.js");
 
+// What the page says when it turns a file away by its name, and when it
+// cannot make sense of one it tried to read.
+const REFUSED =
+  "That kind of file cannot be opened here. Open a Word (.docx, .doc), RTF, OpenDocument (.odt), text or HTML document.";
+const UNREADABLE = "Could not read that file. Is it a valid document?";
+
 const VENDOR = path.join(ROOT, "vendor", "jszip.min.js");
 
 /** Evaluate the vendored file exactly as a classic script tag would. */
@@ -102,7 +108,7 @@ test("the real library refuses a file that is not a zip, as the shim does", asyn
   await app.chooseFile("left", makeFile("pretend.docx", Buffer.from("Dear Sir")));
   assert.strictEqual(
     app.dropzone("left").querySelector(".dz-error").textContent,
-    "Could not read that file. Is it a valid Word document?",
+    UNREADABLE,
   );
 });
 

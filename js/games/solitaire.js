@@ -796,7 +796,7 @@
         "<b>Solitaire</b><br/><br/>Build the four foundations up by suit from Ace to King. " +
           "On the table, build down in alternating colours; only a King may fill a space.<br/><br/>" +
           "Double-click a card to send it home; right-click to send home everything that can go.<br/><br/>" +
-          "Part of docxDiff. Everything runs in this browser.",
+          "Part of diffPad. Everything runs in this browser.",
         { title: "About Solitaire" },
       );
     }

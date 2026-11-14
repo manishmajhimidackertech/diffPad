@@ -11,6 +11,12 @@ const path = require("node:path");
 const { loadApp, makeFile, ROOT } = require("./harness.js");
 const d = require("./docx.js");
 
+// What the page says when it turns a file away by its name, and when it
+// cannot make sense of one it tried to read.
+const REFUSED =
+  "That kind of file cannot be opened here. Open a Word (.docx, .doc), RTF, OpenDocument (.odt), text or HTML document.";
+const UNREADABLE = "Could not read that file. Is it a valid document?";
+
 const v1 = () =>
   fs.readFileSync(path.join(ROOT, "tests", "fixtures", "report_v1.docx"));
 const v2 = () =>
@@ -36,8 +42,8 @@ test("choosing both files renders the diff", async () => {
 
 test("a file of the wrong type chosen through the picker says so", async () => {
   const app = loadApp();
-  await app.chooseFile("left", { name: "notes.txt" });
-  assert.strictEqual(errorOn(app, "left"), "Please upload a .docx file.");
+  await app.chooseFile("left", { name: "holiday.png" });
+  assert.strictEqual(errorOn(app, "left"), REFUSED);
   assert.strictEqual(app.ctx.state.left, null);
 });
 
@@ -49,7 +55,7 @@ test("a file that is not a Word document says so", async () => {
   );
   assert.strictEqual(
     errorOn(app, "left"),
-    "Could not read that file. Is it a valid Word document?",
+    UNREADABLE,
   );
   assert.strictEqual(app.ctx.state.left, null);
 });
@@ -63,17 +69,17 @@ test("a zip that is not a Word document says so", async () => {
   await app.chooseFile("left", makeFile("archive.docx", notADoc));
   assert.strictEqual(
     errorOn(app, "left"),
-    "Could not read that file. Is it a valid Word document?",
+    UNREADABLE,
   );
 });
 
 test("the same errors appear when a file is dropped rather than chosen", async () => {
   const app = loadApp();
   const dz = app.dropzone("left");
-  app.ctx.handleFile("left", { name: "notes.txt" }, dz);
+  app.ctx.handleFile("left", { name: "holiday.png" }, dz);
   assert.strictEqual(
     dz.querySelector(".dz-error").textContent,
-    "Please upload a .docx file.",
+    REFUSED,
   );
 });
 
@@ -97,13 +103,13 @@ test("an extension that merely contains .docx is refused", async () => {
   const app = loadApp();
   await app.chooseFile("left", makeFile("report.docx.exe", v1()));
   assert.strictEqual(app.ctx.state.left, null);
-  assert.strictEqual(errorOn(app, "left"), "Please upload a .docx file.");
+  assert.strictEqual(errorOn(app, "left"), REFUSED);
 });
 
 test("a second attempt after an error clears the message", async () => {
   const app = loadApp();
-  await app.chooseFile("left", { name: "notes.txt" });
-  assert.strictEqual(errorOn(app, "left"), "Please upload a .docx file.");
+  await app.chooseFile("left", { name: "holiday.png" });
+  assert.strictEqual(errorOn(app, "left"), REFUSED);
 
   const dz = app.dropzone("left");
   await app.chooseFile("left", makeFile("report_v1.docx", v1()));
@@ -117,14 +123,14 @@ test("exporting produces one download of a complete HTML document", async () => 
   await app.menu("export");
 
   assert.strictEqual(app.downloads.length, 1);
-  assert.strictEqual(app.downloads[0].download, "docxdiff-export.html");
+  assert.strictEqual(app.downloads[0].download, "diffpad-export.html");
 
   const html = app.exportedHtml();
   assert.ok(html.startsWith("<!DOCTYPE html>"));
-  assert.ok(html.includes("<title>docxDiff export</title>"));
+  assert.ok(html.includes("<title>diffPad export</title>"));
   assert.ok(html.includes("report_v1.docx"));
   assert.ok(html.includes("report_v2.docx"));
-  assert.ok(html.includes('<div class="diff-grid">'));
+  assert.ok(html.includes('<div class="diff-grid doc-sheet">'));
   assert.ok(html.trimEnd().endsWith("</html>"));
 });
 
@@ -213,13 +219,13 @@ test("a disabled Export diff does nothing when chosen anyway", async () => {
 test("the window titles name the file, not the side", async () => {
   const app = loadApp();
   assert.strictEqual(
-    (app.app.innerHTML.match(/Untitled - DiffPad/g) || []).length,
+    (app.app.innerHTML.match(/Untitled - diffPad/g) || []).length,
     2,
   );
   await app.diff(v1(), v2(), ["report_v1.docx", "report_v2.docx"]);
   const html = app.app.innerHTML;
-  assert.ok(html.includes("report_v1.docx - DiffPad"));
-  assert.ok(html.includes("report_v2.docx - DiffPad"));
+  assert.ok(html.includes("report_v1.docx - diffPad"));
+  assert.ok(html.includes("report_v2.docx - diffPad"));
   assert.ok(
     !/\((Original|Updated)\)/.test(html),
     "no (Original) or (Updated) in a title",
@@ -329,13 +335,22 @@ test("the page's stylesheets and scripts are local files that exist", () => {
   }
 });
 
-test("the file picker offers both extensions it accepts", () => {
+test("the file picker offers the extensions the page accepts, and only those", () => {
   const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
   const accepts = html.match(/accept="[^"]*"/g) || [];
   assert.strictEqual(accepts.length, 2, "one per side");
   // The validation and the picker's filter have to agree, or the tool refuses
   // a file it would have compared perfectly well.
-  for (const a of accepts) assert.strictEqual(a, 'accept=".docx,.docm"');
+  for (const a of accepts) {
+    assert.strictEqual(
+      a,
+      'accept=".docx,.docm,.dotx,.dotm,.doc,.dot,.rtf,.odt,.ott,.fodt,.txt,.text,.md,.markdown,.html,.htm,.xhtml"',
+    );
+    for (const ext of a.slice(8, -1).split(",")) {
+      assert.ok(loadApp().ctx.KNOWN_NAME.test("file" + ext), ext + " is offered and accepted");
+    }
+  }
+  assert.ok(!loadApp().ctx.KNOWN_NAME.test("file.pdf"));
 });
 
 // The page's favicon -- the browser tab's icon -- is its own file.
@@ -354,12 +369,12 @@ test("the page has a favicon, and it is a local file", () => {
   assert.ok(fs.existsSync(path.join(ROOT, href)), href + " is missing");
 });
 
-// A DiffPad window's own icon, in its title bar and on its taskbar button, is
-// the DiffPad document, drawn inline. The flag is for the browser tab only:
+// A diffPad window's own icon, in its title bar and on its taskbar button, is
+// the diffPad document, drawn inline. The flag is for the browser tab only:
 // the author asked for the windows to keep the document.
 const DOCUMENT_ICON = '<path d="M2.5 1.5h8l3 3v10h-11z" fill="#fff" stroke="#000"/>';
 
-test("each DiffPad title bar shows the document icon, not the favicon", async () => {
+test("each diffPad title bar shows the document icon, not the favicon", async () => {
   const app = loadApp();
   const check = () => {
     const bars = app.app.innerHTML.split('<div class="titlebar">').slice(1);
@@ -375,7 +390,7 @@ test("each DiffPad title bar shows the document icon, not the favicon", async ()
   check();
 });
 
-test("each DiffPad taskbar button shows the document icon too", async () => {
+test("each diffPad taskbar button shows the document icon too", async () => {
   const app = loadApp();
   await app.diff(v1(), v2());
   const buttons = app.el("tasks").innerHTML.split('<button class="task').slice(1);
