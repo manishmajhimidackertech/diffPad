@@ -417,7 +417,7 @@
         "<b>Minesweeper</b><br/><br/>Find the mines without setting one off. " +
           "Numbers count the mines around a square; right-click to flag one, " +
           "and press both buttons on a number to clear around it.<br/><br/>" +
-          "Part of docxDiff. Everything runs in this browser.",
+          "Part of diffPad. Everything runs in this browser.",
         { title: "About Minesweeper" },
       );
     }

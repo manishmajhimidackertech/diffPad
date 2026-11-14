@@ -9,12 +9,24 @@
 // well as against the fix, it was never a regression test, and the matching
 // assertion here is what says so.
 
-const test = require("node:test");
+const nodeTest = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { loadOriginal, baselineCommit, ROOT } = require("./harness.js");
+const {
+  loadOriginal,
+  baselineCommit,
+  baselineAvailable,
+  BASELINE_MISSING,
+  ROOT,
+} = require("./harness.js");
+
+// Without the original page there is nothing to reproduce against; see
+// baselineAvailable in harness.js.
+const test = baselineAvailable()
+  ? nodeTest
+  : (name, fn) => nodeTest(name, { skip: BASELINE_MISSING }, fn);
 const d = require("./docx.js");
 
 test("the baseline commit is reachable and is not the working tree", () => {

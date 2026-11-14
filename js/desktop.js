@@ -1,13 +1,13 @@
 /*
- * The desktop around docxDiff: the Start menu, and the game windows it opens.
+ * The desktop around diffPad: the Start menu, and the game windows it opens.
  *
  * Each game is a separate script that calls Win95.registerGame() with a
  * definition, and this file gives it a real window: one that can be dragged
  * by its title bar, resized from its edges, minimized to the taskbar,
  * maximized over the desktop and closed. Game windows live in their own layer
- * above the two DiffPad windows, so the diff underneath is never disturbed.
+ * above the two diffPad windows, so the diff underneath is never disturbed.
  *
- * Nothing here touches the diff. js/app.js owns #app, the DiffPad taskbar
+ * Nothing here touches the diff. js/app.js owns #app, the diffPad taskbar
  * buttons and Start over; this file owns #game-layer, #game-tasks and the
  * rest of the Start menu.
  */
@@ -93,7 +93,7 @@
   };
 
   var wins = []; // open game windows, bottom to top
-  var active = null; // the active game window, or null when a DiffPad window is
+  var active = null; // the active game window, or null when a diffPad window is
   var cascade = 0;
 
   function topVisible(except) {
@@ -112,7 +112,7 @@
     });
   }
 
-  // Win95 shows exactly one active window. When it is a game, the DiffPad
+  // Win95 shows exactly one active window. When it is a game, the diffPad
   // windows' title bars go grey; when it is neither, they decide for
   // themselves (js/app.js).
   function setActive(win) {
@@ -775,7 +775,7 @@
     wins.forEach(function (w) {
       if (!w.el.contains(t)) closeMenus(w);
     });
-    // A click on a DiffPad window, or on its taskbar button, makes it the
+    // A click on a diffPad window, or on its taskbar button, makes it the
     // active window again.
     if (t.closest("#app") || t.closest("#tasks")) setActive(null);
   });

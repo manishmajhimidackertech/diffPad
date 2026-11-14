@@ -1,7 +1,7 @@
 (function () {
-  // docxDiff. Loaded by index.html after vendor/jszip.min.js; styled by
-  // css/style.css. Everything runs in this browser tab and nothing is sent
-  // anywhere.
+  // diffPad. Loaded by index.html after vendor/jszip.min.js and the readers
+  // in js/formats/; styled by css/style.css. Everything runs in this browser
+  // tab and nothing is sent anywhere.
 
   var state = { left: null, right: null }; // {fileName, blocks}
 
@@ -52,6 +52,712 @@
     return !(v === "0" || v === "false" || v === "off" || v === "none");
   }
 
+  // ============================== THE DOCUMENT MODEL ==============================
+  //
+  // Whatever kind of file a document came from, it is reduced to the same
+  // thing: a list of blocks, one per paragraph and one per table row. A
+  // block carries runs of text ("segments"), each with the formatting it
+  // ends up with once styles have been applied, and the paragraph's own
+  // formatting. The readers below and in js/formats/ produce that list;
+  // everything after it -- alignment, word diff, drawing -- works on blocks
+  // and does not know what the file was.
+  //
+  // Sizes are in half-points, as Word counts them; spacing and indents are
+  // in points.
+
+  function clampNumber(v, lo, hi) {
+    v = Number(v);
+    if (!isFinite(v)) return null;
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  // A font name is the other string besides a colour that reaches CSS, and
+  // gets the same treatment: keep the characters a font name is made of and
+  // drop the rest, rather than try to quote whatever arrives.
+  function fontCss(name) {
+    if (typeof name !== "string") return "";
+    var clean = name
+      .replace(/[^A-Za-z0-9 _.\-]/g, "")
+      .trim()
+      .slice(0, 60);
+    if (!clean) return "";
+    var generic = /courier|consol|mono|typewriter/i.test(clean)
+      ? "monospace"
+      : /sans|arial|helvet|calibri|verdana|tahoma|segoe|aptos/i.test(clean)
+        ? "sans-serif"
+        : /times|georgia|garamond|cambria|palatino|book|roman|serif|minion|century|constantia/i.test(
+              clean,
+            )
+          ? "serif"
+          : "sans-serif";
+    return "font-family:'" + clean + "'," + generic + ";";
+  }
+
+  function sizeCss(halfPoints) {
+    var n = clampNumber(halfPoints, 2, 400);
+    return n === null ? "" : "font-size:" + n / 2 + "pt;";
+  }
+
+  // The formatting a run adds to the paragraph it sits in. `base` is what
+  // the paragraph already gives every run, so an ordinary run adds nothing
+  // and a heading does not repeat its size on each word.
+  function runCss(s, base) {
+    base = base || {};
+    var css = "";
+    if (!!s.bold !== !!base.bold)
+      css += "font-weight:" + (s.bold ? "700" : "400") + ";";
+    if (!!s.italic !== !!base.italic)
+      css += "font-style:" + (s.italic ? "italic" : "normal") + ";";
+    // Underline and strike-through are never left to the paragraph: a
+    // decoration drawn by a parent cannot be switched off by a child.
+    var deco = [];
+    if (s.underline) deco.push("underline");
+    if (s.strike) deco.push("line-through");
+    if (deco.length) css += "text-decoration:" + deco.join(" ") + ";";
+    var color = hexColor(s.color),
+      baseColor = hexColor(base.color);
+    if (color !== baseColor) css += "color:#" + (color || "000000") + ";";
+    if (s.vert === "super" || s.vert === "sub") {
+      css += "vertical-align:" + s.vert + ";font-size:0.75em;";
+    } else if (s.size && s.size !== base.size) {
+      css += sizeCss(s.size);
+    }
+    if (s.font && s.font !== base.font) css += fontCss(s.font);
+    var hl = hexColor(s.highlight);
+    if (hl) css += "background:#" + hl + ";";
+    if (s.caps) css += "text-transform:uppercase;";
+    return css;
+  }
+
+  // What the paragraph gives all of its runs.
+  function baseCss(base) {
+    if (!base) return "";
+    var css = "";
+    if (base.size) css += sizeCss(base.size);
+    if (base.font) css += fontCss(base.font);
+    if (base.bold) css += "font-weight:700;";
+    if (base.italic) css += "font-style:italic;";
+    var color = hexColor(base.color);
+    if (color) css += "color:#" + color + ";";
+    return css;
+  }
+
+  var ALIGN = { left: 1, center: 1, right: 1, justify: 1 };
+
+  function pt(v, lo, hi) {
+    var n = clampNumber(v, lo, hi);
+    return n === null ? null : Math.round(n * 100) / 100 + "pt";
+  }
+
+  // The paragraph's own formatting: where it sits and how much room it has.
+  function paraCss(block) {
+    var p = block.para || {};
+    var css = "";
+    if (ALIGN[p.align] && p.align !== "left")
+      css += "text-align:" + p.align + ";";
+    var left = clampNumber(p.indL || 0, -72, 360) || 0;
+    var first = clampNumber(p.indFirst || 0, -360, 360) || 0;
+    if (block.isListItem) {
+      // A list item's number hangs in its indent; the number is drawn
+      // beside the text, so only the level is kept.
+      left = 0;
+      first = 0;
+    }
+    // A hanging indent pulls the first line back out; it can only pull it
+    // as far as the paragraph is indented.
+    if (left + first < 0) first = -left;
+    if (left) css += "margin-left:" + pt(left, -72, 360) + ";";
+    if (p.indR) {
+      var r = pt(p.indR, 0, 360);
+      if (r && r !== "0pt") css += "margin-right:" + r + ";";
+    }
+    if (first) css += "text-indent:" + pt(first, -360, 360) + ";";
+    if (p.before !== undefined && p.before !== null) {
+      var b = pt(p.before, 0, 72);
+      if (b && b !== "0pt") css += "margin-top:" + b + ";";
+    }
+    if (p.after !== undefined && p.after !== null) {
+      var a = pt(p.after, 0, 72);
+      if (a) css += "margin-bottom:" + a + ";";
+    }
+    return css + baseCss(block.base);
+  }
+
+  // ---- numbers and bullets
+
+  function toRoman(n) {
+    if (n <= 0 || n >= 4000) return String(n);
+    var out = "";
+    [
+      [1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"],
+      [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"],
+    ].forEach(function (p) {
+      while (n >= p[0]) {
+        out += p[1];
+        n -= p[0];
+      }
+    });
+    return out;
+  }
+
+  // a, b ... z, aa, bb ... the way Word letters a list.
+  function toLetters(n) {
+    if (n <= 0) return String(n);
+    var letter = String.fromCharCode(97 + ((n - 1) % 26));
+    var out = "";
+    for (var i = 0; i <= Math.floor((n - 1) / 26) && i < 20; i++) out += letter;
+    return out;
+  }
+
+  // `fmt` is one of decimal, lowerLetter, upperLetter, lowerRoman,
+  // upperRoman, decimalZero, none; anything else counts in digits.
+  function formatNumber(n, fmt) {
+    if (fmt === "lowerLetter") return toLetters(n);
+    if (fmt === "upperLetter") return toLetters(n).toUpperCase();
+    if (fmt === "lowerRoman") return toRoman(n);
+    if (fmt === "upperRoman") return toRoman(n).toUpperCase();
+    if (fmt === "decimalZero") return n < 10 ? "0" + n : String(n);
+    if (fmt === "none") return "";
+    return String(n);
+  }
+
+  function bulletFor(level) {
+    return level >= 2 ? "▪" : level === 1 ? "◦" : "•";
+  }
+
+  // A bullet is stored as a character in a symbol font, where it sits in
+  // the private-use area and means nothing in any other font.
+  var SYMBOL_BULLETS = {
+    "": "•",
+    "·": "•",
+    "": "▪",
+    "§": "▪",
+    "": "➢",
+    "": "✓",
+    "": "◆",
+    "": "❖",
+    "": "–",
+    o: "◦",
+  };
+
+  function bulletGlyph(text, level) {
+    text = String(text || "").trim();
+    if (!text) return bulletFor(level);
+    if (Object.prototype.hasOwnProperty.call(SYMBOL_BULLETS, text))
+      return SYMBOL_BULLETS[text];
+    if (/^[-]+$/.test(text) || text.length > 3) return bulletFor(level);
+    return text;
+  }
+
+  // Counts list items as a document is read. `levels` describes one list:
+  // for each level its format, the text of its number with %1, %2 ...
+  // standing for the levels' counters, and where it starts.
+  function listCounter() {
+    var counters = Object.create(null);
+    return function (listId, level, levels) {
+      level = Math.max(0, Math.min(8, level | 0));
+      var def = (levels && levels[level]) || null;
+      if (!def || def.fmt === "bullet") {
+        return {
+          kind: "bullet",
+          label: bulletGlyph(def ? def.text : "", level),
+        };
+      }
+      var c = counters[listId] || (counters[listId] = []);
+      for (var i = 0; i < level; i++) {
+        if (c[i] === undefined) {
+          var d = levels[i];
+          c[i] = d && d.start !== undefined ? d.start : 1;
+        }
+      }
+      c[level] =
+        c[level] === undefined
+          ? def.start !== undefined
+            ? def.start
+            : 1
+          : c[level] + 1;
+      c.length = level + 1;
+      var text = def.text === undefined || def.text === null ? "%" + (level + 1) + "." : def.text;
+      var label = text.replace(/%([1-9])/g, function (whole, d) {
+        var idx = parseInt(d, 10) - 1;
+        var lv = levels[idx];
+        return c[idx] === undefined
+          ? ""
+          : formatNumber(c[idx], lv ? lv.fmt : "decimal");
+      });
+      return { kind: "number", label: label };
+    };
+  }
+
+  // ---- blocks
+
+  function makeParagraphBlock(pd, sectionLabel) {
+    return {
+      sectionLabel: sectionLabel,
+      isHeading: !!pd.isHeading,
+      headingLevel: pd.headingLevel || 0,
+      isListItem: !!pd.isListItem,
+      ilvl: pd.ilvl || 0,
+      listLabel: pd.listLabel || "",
+      listKind: pd.listKind || "",
+      para: pd.para || {},
+      base: pd.base || {},
+      segments: pd.segments,
+      isTableRow: false,
+      isDivider: false,
+    };
+  }
+  function makeTableRowBlock(cells, sectionLabel) {
+    return {
+      sectionLabel: sectionLabel,
+      isTableRow: true,
+      cells: cells,
+      isDivider: false,
+    };
+  }
+  function makeDividerBlock(label) {
+    return {
+      sectionLabel: "divider",
+      isDivider: true,
+      segments: [
+        {
+          text: "— " + label + " —",
+          isDel: false,
+          isImage: false,
+        },
+      ],
+    };
+  }
+
+  // Images and footnote references are diffed as tokens, so they need a
+  // spelling inside the plain text that the word tokeniser can pick out
+  // again. Both are wrapped in their own marker character at each end:
+  // the fingerprint of an image is base64, which has no delimiter of its
+  // own, so an opening marker alone left "fig<mark>1892:AAB...</mark>one"
+  // as a single word whenever an image sat against text with no space.
+  // That word matched nothing in the token map and was printed verbatim.
+  var IMG_MARK = "￼";
+  var FN_MARK = "�";
+
+  function imageToken(seg) {
+    return IMG_MARK + (seg.imgFingerprint || seg.relId || "?") + IMG_MARK;
+  }
+  function footnoteToken(seg) {
+    return FN_MARK + (seg.noteKind || "") + (seg.footnoteId || "?") + FN_MARK;
+  }
+  // Marker characters occurring in the document's own text would make a
+  // token ambiguous, so they are dropped from the text used for
+  // alignment. They stay in the rendered markup, so a paragraph that
+  // differs only by one still shows up -- as a formatting change.
+  function stripTokenMarks(s) {
+    return String(s).replace(/[￼�]/g, "");
+  }
+
+  // Record every image and footnote segment under the exact token that
+  // plainTextForDiff will emit for it, so the renderer can turn a token
+  // back into the thing it stands for. Both sides go through the same two
+  // helpers; building the key separately is how they drifted before.
+  function indexTokens(block, segments) {
+    segments.forEach(function (s) {
+      if (s.isDel) return;
+      if (s.isImage) block.imageTokens[imageToken(s)] = s;
+      else if (s.isFootnoteRef || s.isFootnoteMarker)
+        block.footnoteTokens[footnoteToken(s)] = s;
+    });
+  }
+
+  function segmentPlainText(s) {
+    if (s.isImage) return imageToken(s);
+    if (s.isFootnoteRef || s.isFootnoteMarker) return footnoteToken(s);
+    return stripTokenMarks(s.text);
+  }
+
+  function plainTextForDiff(segments) {
+    return segments
+      .filter(function (s) {
+        return !s.isDel;
+      })
+      .map(segmentPlainText)
+      .join("");
+  }
+
+  // Where each run falls in the plain text, so that a word picked out by
+  // the word diff can be drawn with the formatting of the run it came from.
+  function spansFor(segments) {
+    var spans = [];
+    var at = 0;
+    segments.forEach(function (s) {
+      if (s.isDel) return;
+      var len = segmentPlainText(s).length;
+      if (len && !s.isImage && !s.isFootnoteRef && !s.isFootnoteMarker)
+        spans.push({ start: at, end: at + len, seg: s });
+      at += len;
+    });
+    return spans;
+  }
+
+  function footnoteRefHtml(s) {
+    return (
+      '<sup class="fn-ref" id="' +
+      escapeHtml(s.refAnchorId) +
+      '"><a class="fn-ref-link" href="#' +
+      escapeHtml(s.anchorId) +
+      '" title="Jump to ' +
+      (s.noteKind === "en" ? "endnote " : "footnote ") +
+      escapeHtml(s.footnoteId) +
+      '">' +
+      escapeHtml(s.footnoteId) +
+      "</a></sup>"
+    );
+  }
+
+  function footnoteMarkerHtml(s) {
+    return (
+      '<sup class="fn-marker" id="' +
+      escapeHtml(s.anchorId) +
+      '"><a class="fn-marker-link" href="#' +
+      escapeHtml(s.backAnchorId) +
+      '" title="Back to text">' +
+      escapeHtml(s.footnoteId) +
+      "</a></sup>"
+    );
+  }
+
+  // An image's data: URL is built here from bytes, never copied from a
+  // document, but it is checked all the same before it becomes an
+  // attribute.
+  function safeImageSrc(url) {
+    return typeof url === "string" &&
+      /^data:image\/(png|jpeg|gif|bmp);base64,[A-Za-z0-9+/=]*$/.test(url)
+      ? url
+      : "";
+  }
+
+  function imageTagHtml(s) {
+    var src = safeImageSrc(s.dataUrl);
+    if (!src) return "[image]";
+    var w = clampNumber(s.widthPx, 1, 2000);
+    return (
+      '<img src="' +
+      src +
+      '"' +
+      (w ? ' style="width:' + Math.round(w) + 'px;"' : "") +
+      ">"
+    );
+  }
+
+  // One run's text, already escaped, wrapped in whatever the run carries:
+  // its formatting, a tracked change, a link.
+  function wrapRunHtml(s, inner, base) {
+    var style = runCss(s, base);
+    var cls = [];
+    var title = "";
+    if (s.isDel) {
+      cls.push("trk-del");
+      title = "Tracked deletion" + (s.author ? " by " + s.author : "");
+    } else if (s.trackType === "ins") {
+      cls.push("trk-ins");
+      title = "Tracked insertion" + (s.author ? " by " + s.author : "");
+    }
+    if (s.href) {
+      inner =
+        '<a class="doc-link" data-href="' +
+        escapeHtml(s.href) +
+        '" title="' +
+        escapeHtml(s.href) +
+        '">' +
+        inner +
+        "</a>";
+    }
+    return (
+      "<span" +
+      (cls.length ? ' class="' + cls.join(" ") + '"' : "") +
+      (style ? ' style="' + style + '"' : "") +
+      (title ? ' title="' + escapeHtml(title) + '"' : "") +
+      ">" +
+      inner +
+      "</span>"
+    );
+  }
+
+  function renderSegmentsHtml(segments, base) {
+    return segments
+      .map(function (s) {
+        if (s.isFootnoteRef) return footnoteRefHtml(s);
+        if (s.isFootnoteMarker) return footnoteMarkerHtml(s);
+        if (s.isImage) {
+          var cls =
+            "inline-img" +
+            (s.trackType === "ins" ? " trk-ins" : "") +
+            (s.trackType === "del" ? " trk-del" : "");
+          var title = s.trackType
+            ? "Tracked " + s.trackType + (s.author ? " by " + s.author : "")
+            : "Embedded image";
+          return (
+            '<span class="' +
+            cls +
+            '" title="' +
+            escapeHtml(title) +
+            '">' +
+            imageTagHtml(s) +
+            "</span>"
+          );
+        }
+        var text = escapeHtml(s.text)
+          .replace(/\t/g, "&nbsp;&nbsp;&nbsp;&nbsp;")
+          .replace(/\n/g, "<br>");
+        return wrapRunHtml(s, text, base);
+      })
+      .join("");
+  }
+
+  function cellStyleAttr(c) {
+    var css = "";
+    var w = clampNumber(c.width, 0, 100000);
+    if (w) css += "flex-grow:" + Math.round(w) + ";";
+    var fill = hexColor(c.fill);
+    if (fill) css += "background:#" + fill + ";";
+    if (ALIGN[c.align] && c.align !== "left") css += "text-align:" + c.align + ";";
+    css += baseCss(c.base);
+    return css ? ' style="' + css + '"' : "";
+  }
+
+  function rowCellHtml(c, inner) {
+    return '<div class="row-cell"' + cellStyleAttr(c) + ">" + inner + "</div>";
+  }
+
+  // Give every block the two strings the rest of the page works from: the
+  // text it is aligned on and the markup it is drawn with.
+  function finalizeBlocks(blocks, docId) {
+    blocks.forEach(function (b) {
+      b.imageTokens = {};
+      b.footnoteTokens = {};
+      if (b.isTableRow) {
+        b.text = b.cells
+          .map(function (c) {
+            return plainTextForDiff(c.segs);
+          })
+          .join(" | ");
+        b.html = b.cells
+          .map(function (c) {
+            c.spans = spansFor(c.segs);
+            return rowCellHtml(c, renderSegmentsHtml(c.segs, c.base));
+          })
+          .join("");
+        b.cells.forEach(function (c) {
+          indexTokens(b, c.segs);
+        });
+        b.paraKey = "";
+      } else {
+        b.text = plainTextForDiff(b.segments);
+        b.html = renderSegmentsHtml(b.segments, b.base);
+        b.spans = spansFor(b.segments);
+        indexTokens(b, b.segments);
+        b.paraCss = b.isDivider ? "" : paraCss(b);
+        b.paraKey = b.isDivider
+          ? ""
+          : b.paraCss +
+            (b.isHeading ? "h" + b.headingLevel : "") +
+            (b.isListItem ? "li" + b.ilvl + b.listKind : "");
+      }
+
+      // b.html carries docId, which is freshly randomised on every read,
+      // so the same file read twice produces two different strings for
+      // any paragraph holding a footnote anchor. Comparing b.html to
+      // decide "formatting changed" therefore reported every one of
+      // those paragraphs as changed against an identical copy of itself.
+      // The key is the same markup with the per-read id taken back out,
+      // and it -- not b.html -- is what the alignment compares, along
+      // with the paragraph's own formatting.
+      var htmlKey = docId ? b.html.split(docId).join("") : b.html;
+      b.fmtKey = b.paraKey + "\u0001" + htmlKey;
+
+      // A paragraph that is entirely a tracked deletion (or otherwise has no
+      // accepted text but still has visible markup, e.g. an in-source comment
+      // anchor) must never be treated as an interchangeable "blank paragraph"
+      // during alignment -- give it a key of its own so it surfaces as its
+      // own change instead of silently absorbing into an unrelated blank.
+      // The key is the markup itself and not a counter: the counter ran across
+      // both documents at once, so the same deleted paragraph was handed a
+      // different key on each side and always came out as one removal plus one
+      // addition -- even when a file was compared with itself.
+      if (b.text === "" && htmlKey !== "") {
+        b.text = "\u0000" + htmlKey;
+      }
+    });
+    return blocks;
+  }
+
+  function newDocId() {
+    return "d" + Math.random().toString(36).slice(2, 9) + "_";
+  }
+
+  // ---- what the readers in js/formats/ hand back
+  //
+  // Those readers know nothing about this page. They return plain
+  // descriptions -- { type: "p" | "row" | "divider" | "note" | "comment" }
+  // -- and this turns them into blocks, adding the anchors that link a
+  // footnote to its reference.
+  function noteRefSegment(note, docId) {
+    var kind = note.kind === "en" ? "en" : "";
+    var id = String(note.id);
+    return {
+      text: id,
+      isFootnoteRef: true,
+      footnoteId: id,
+      noteKind: kind,
+      anchorId: docId + (kind || "fn") + "-" + id,
+      refAnchorId: docId + (kind || "fn") + "ref-" + id,
+      isDel: false,
+      isImage: false,
+    };
+  }
+
+  function noteMarkerSegment(note, docId) {
+    var kind = note.kind === "en" ? "en" : "";
+    var id = String(note.id);
+    return {
+      text: id,
+      isFootnoteMarker: true,
+      footnoteId: id,
+      noteKind: kind,
+      anchorId: docId + (kind || "fn") + "-" + id,
+      backAnchorId: docId + (kind || "fn") + "ref-" + id,
+      isDel: false,
+      isImage: false,
+    };
+  }
+
+  function segmentsFromRaw(raw, docId) {
+    return (raw || []).map(function (s) {
+      if (s.note) return noteRefSegment(s.note, docId);
+      if (s.image) {
+        return {
+          text: IMG_MARK,
+          isImage: true,
+          isDel: false,
+          relId: null,
+          dataUrl: s.image.dataUrl || null,
+          imgFingerprint: s.image.fingerprint || null,
+          widthPx: s.image.widthPx || null,
+          trackType: s.trackType || null,
+          author: s.author || null,
+        };
+      }
+      return {
+        text: String(s.text === undefined || s.text === null ? "" : s.text),
+        bold: !!s.bold,
+        italic: !!s.italic,
+        underline: !!s.underline,
+        strike: !!s.strike,
+        color: hexColor(s.color),
+        size: s.size || null,
+        font: s.font || null,
+        highlight: hexColor(s.highlight),
+        vert: s.vert || null,
+        caps: !!s.caps,
+        trackType: s.trackType || null,
+        author: s.author || null,
+        href: s.href || null,
+        isDel: !!s.isDel,
+        isImage: false,
+      };
+    });
+  }
+
+  // A reader that resolves no styles gives every run its formatting in
+  // full. What all of a paragraph's runs agree on is the paragraph's, and
+  // is said once.
+  function commonBase(segs) {
+    var base = null;
+    segs.forEach(function (s) {
+      if (s.isImage || s.isFootnoteRef || s.isFootnoteMarker || !s.text) return;
+      if (/^\s*$/.test(s.text) && base) return;
+      var own = {
+        bold: !!s.bold,
+        italic: !!s.italic,
+        color: s.color || null,
+        size: s.size || null,
+        font: s.font || null,
+      };
+      if (!base) {
+        base = own;
+        return;
+      }
+      Object.keys(own).forEach(function (k) {
+        if (base[k] !== own[k]) base[k] = k === "bold" || k === "italic" ? false : null;
+      });
+    });
+    return base || {};
+  }
+
+  function blocksFromRaw(raw, docId) {
+    var blocks = [];
+    raw.forEach(function (r) {
+      var section = r.section || "body";
+      if (r.type === "divider") {
+        blocks.push(makeDividerBlock(r.label));
+      } else if (r.type === "row") {
+        var row = makeTableRowBlock(
+          (r.cells || []).map(function (c) {
+            var cellSegs = segmentsFromRaw(c.segments, docId);
+            return {
+              segs: cellSegs,
+              fill: hexColor(c.fill) === "FFFFFF" ? null : hexColor(c.fill),
+              width: c.width || null,
+              align: c.align || null,
+              base: c.base || commonBase(cellSegs),
+            };
+          }),
+          section,
+        );
+        row.rowFirst = !!r.first;
+        row.rowLast = !!r.last;
+        blocks.push(row);
+      } else if (r.type === "note" || r.type === "comment") {
+        var lead =
+          r.type === "note"
+            ? noteMarkerSegment(r, docId)
+            : {
+                text: "Comment (" + (r.author || "Unknown") + "): ",
+                bold: true,
+                isDel: false,
+                isImage: false,
+              };
+        var noteSegs = segmentsFromRaw(r.segments, docId);
+        blocks.push(
+          makeParagraphBlock(
+            {
+              segments: [lead].concat(noteSegs),
+              base: r.base || commonBase(noteSegs),
+            },
+            r.type === "comment" ? "comment" : r.kind === "en" ? "endnote" : "footnote",
+          ),
+        );
+      } else {
+        var list = r.list || null;
+        var paraSegs = segmentsFromRaw(r.segments, docId);
+        blocks.push(
+          makeParagraphBlock(
+            {
+              isHeading: r.heading > 0,
+              headingLevel: Math.max(0, Math.min(9, r.heading | 0)),
+              isListItem: !!list,
+              ilvl: list ? Math.max(0, Math.min(8, list.level | 0)) : 0,
+              listLabel: list ? String(list.label || "") : "",
+              listKind: list ? (list.kind === "number" ? "number" : "bullet") : "",
+              para: r.para || {},
+              base: r.base || commonBase(paraSegs),
+              segments: paraSegs,
+            },
+            section,
+          ),
+        );
+      }
+    });
+    return blocks;
+  }
+
   // ============================== OOXML EXTRACTION ==============================
 
   function childrenLocal(el, name) {
@@ -69,25 +775,289 @@
     return arr.length ? arr[0] : null;
   }
 
-  function extractParagraph(pEl, pendingImages, rels, basePart, docId) {
-    var pPr = firstLocal(pEl, "pPr");
-    var numPr = pPr && firstLocal(pPr, "numPr");
-    var ilvl = 0;
-    if (numPr) {
-      var ilvlEl = firstLocal(numPr, "ilvl");
-      if (ilvlEl) ilvl = parseInt(ilvlEl.getAttribute("w:val") || "0", 10) || 0;
+  var HIGHLIGHT = {
+    yellow: "FFFF00", green: "00FF00", cyan: "00FFFF", magenta: "FF00FF",
+    blue: "0000FF", red: "FF0000", darkBlue: "000080", darkCyan: "008080",
+    darkGreen: "008000", darkMagenta: "800080", darkRed: "800000",
+    darkYellow: "808000", darkGray: "808080", lightGray: "C0C0C0",
+    black: "000000", white: "FFFFFF",
+  };
+
+  // What a w:rPr says, and only what it says: a property it does not
+  // mention is left out, so that the result can be laid over whatever the
+  // style underneath gave.
+  function readRunProps(rPr, theme) {
+    var p = {};
+    if (!rPr) return p;
+    var b = firstLocal(rPr, "b"),
+      bCs = firstLocal(rPr, "bCs");
+    if (b || bCs) p.bold = onOff(b) || onOff(bCs);
+    var i = firstLocal(rPr, "i"),
+      iCs = firstLocal(rPr, "iCs");
+    if (i || iCs) p.italic = onOff(i) || onOff(iCs);
+    var u = firstLocal(rPr, "u");
+    if (u) p.underline = onOff(u);
+    var strike = firstLocal(rPr, "strike");
+    if (strike) p.strike = onOff(strike);
+    var caps = firstLocal(rPr, "caps");
+    if (caps) p.caps = onOff(caps);
+    var colorEl = firstLocal(rPr, "color");
+    if (colorEl) {
+      var cv = colorEl.getAttribute("w:val");
+      if (hexColor(cv)) p.color = hexColor(cv);
+      else if (cv === "auto") p.color = null;
     }
-    var isListItem = !!numPr;
-    var pStyle = pPr && firstLocal(pPr, "pStyle");
-    var styleVal = pStyle ? pStyle.getAttribute("w:val") : null;
+    var sz = firstLocal(rPr, "sz");
+    if (sz) {
+      var half = parseInt(sz.getAttribute("w:val") || "", 10);
+      if (half > 0) p.size = half;
+    }
+    var fonts = firstLocal(rPr, "rFonts");
+    if (fonts) {
+      var face = fonts.getAttribute("w:ascii") || fonts.getAttribute("w:hAnsi");
+      var themed = fonts.getAttribute("w:asciiTheme") || fonts.getAttribute("w:hAnsiTheme");
+      if (!face && themed && theme)
+        face = /^major/.test(themed) ? theme.major : theme.minor;
+      if (face) p.font = face;
+    }
+    var hl = firstLocal(rPr, "highlight");
+    if (hl) {
+      var hv = hl.getAttribute("w:val");
+      p.highlight = Object.prototype.hasOwnProperty.call(HIGHLIGHT, hv)
+        ? HIGHLIGHT[hv]
+        : null;
+    }
+    var va = firstLocal(rPr, "vertAlign");
+    if (va) {
+      var vv = va.getAttribute("w:val");
+      p.vert = vv === "superscript" ? "super" : vv === "subscript" ? "sub" : null;
+    }
+    var rStyle = firstLocal(rPr, "rStyle");
+    if (rStyle) p.styleId = rStyle.getAttribute("w:val");
+    return p;
+  }
+
+  function twips(el, name) {
+    var v = el.getAttribute(name);
+    if (v === null || v === "") return undefined;
+    var n = parseInt(v, 10);
+    return isFinite(n) ? n / 20 : undefined;
+  }
+
+  var JC = {
+    left: "left", start: "left", center: "center", right: "right",
+    end: "right", both: "justify", distribute: "justify",
+  };
+
+  function readParaProps(pPr) {
+    var p = {};
+    if (!pPr) return p;
+    var jc = firstLocal(pPr, "jc");
+    if (jc) {
+      var jv = jc.getAttribute("w:val");
+      if (Object.prototype.hasOwnProperty.call(JC, jv)) p.align = JC[jv];
+    }
+    var ind = firstLocal(pPr, "ind");
+    if (ind) {
+      var left = twips(ind, "w:left");
+      if (left === undefined) left = twips(ind, "w:start");
+      if (left !== undefined) p.indL = left;
+      var right = twips(ind, "w:right");
+      if (right === undefined) right = twips(ind, "w:end");
+      if (right !== undefined) p.indR = right;
+      var hanging = twips(ind, "w:hanging"),
+        firstLine = twips(ind, "w:firstLine");
+      if (hanging !== undefined) p.indFirst = -hanging;
+      else if (firstLine !== undefined) p.indFirst = firstLine;
+    }
+    var spacing = firstLocal(pPr, "spacing");
+    if (spacing) {
+      var before = twips(spacing, "w:before"),
+        after = twips(spacing, "w:after");
+      if (before !== undefined) p.before = before;
+      if (after !== undefined) p.after = after;
+    }
+    var numPr = firstLocal(pPr, "numPr");
+    if (numPr) {
+      var numId = firstLocal(numPr, "numId"),
+        ilvl = firstLocal(numPr, "ilvl");
+      if (numId) p.numId = numId.getAttribute("w:val");
+      if (ilvl) p.ilvl = parseInt(ilvl.getAttribute("w:val") || "0", 10) || 0;
+    }
+    var outline = firstLocal(pPr, "outlineLvl");
+    if (outline) {
+      var lvl = parseInt(outline.getAttribute("w:val") || "", 10);
+      if (isFinite(lvl)) p.outline = lvl;
+    }
+    var pStyle = firstLocal(pPr, "pStyle");
+    if (pStyle) p.styleId = pStyle.getAttribute("w:val");
+    return p;
+  }
+
+  // word/styles.xml: the document's defaults and every style, by id.
+  function readStyles(stylesXml, theme) {
+    var styles = {
+      byId: Object.create(null),
+      run: {},
+      para: {},
+      defaultPara: null,
+      resolved: Object.create(null),
+    };
+    if (!stylesXml || !stylesXml.documentElement) return styles;
+    var root = stylesXml.documentElement;
+    var dd = firstLocal(root, "docDefaults");
+    if (dd) {
+      var rd = firstLocal(dd, "rPrDefault"),
+        pd = firstLocal(dd, "pPrDefault");
+      if (rd) styles.run = readRunProps(firstLocal(rd, "rPr"), theme);
+      if (pd) styles.para = readParaProps(firstLocal(pd, "pPr"));
+    }
+    childrenLocal(root, "style").forEach(function (st) {
+      var id = st.getAttribute("w:styleId");
+      if (id === null) return;
+      var nameEl = firstLocal(st, "name"),
+        basedOn = firstLocal(st, "basedOn");
+      var type = st.getAttribute("w:type");
+      styles.byId[id] = {
+        type: type,
+        name: (nameEl && nameEl.getAttribute("w:val")) || "",
+        basedOn: basedOn ? basedOn.getAttribute("w:val") : null,
+        run: readRunProps(firstLocal(st, "rPr"), theme),
+        para: readParaProps(firstLocal(st, "pPr")),
+      };
+      var dflt = st.getAttribute("w:default");
+      if (type === "paragraph" && (dflt === "1" || dflt === "true"))
+        styles.defaultPara = id;
+    });
+    return styles;
+  }
+
+  // A style with everything it is based on laid underneath it.
+  function resolveStyle(styles, id) {
+    if (id === null || id === undefined || !styles.byId[id])
+      return { run: {}, para: {}, heading: 0 };
+    if (styles.resolved[id]) return styles.resolved[id];
+    var chain = [];
+    var seen = Object.create(null);
+    for (var at = id; at !== null && styles.byId[at] && !seen[at]; ) {
+      seen[at] = true;
+      chain.unshift(styles.byId[at]);
+      at = styles.byId[at].basedOn;
+    }
+    var out = { run: {}, para: {}, heading: 0 };
+    chain.forEach(function (st) {
+      Object.assign(out.run, st.run);
+      Object.assign(out.para, st.para);
+      // "heading 1" is the name Word gives the built-in style in every
+      // language, whatever the style's id has been translated to.
+      var m = /^heading ([1-9])$/i.exec(st.name);
+      if (m) out.heading = parseInt(m[1], 10);
+    });
+    delete out.run.styleId;
+    styles.resolved[id] = out;
+    return out;
+  }
+
+  // word/numbering.xml: for each list a paragraph can name, its levels.
+  function readNumbering(numXml) {
+    var lists = Object.create(null);
+    if (!numXml || !numXml.documentElement) return lists;
+    var root = numXml.documentElement;
+    function readLevels(parent, into) {
+      childrenLocal(parent, "lvl").forEach(function (lvl) {
+        var i = parseInt(lvl.getAttribute("w:ilvl") || "0", 10) || 0;
+        var fmt = firstLocal(lvl, "numFmt"),
+          text = firstLocal(lvl, "lvlText"),
+          start = firstLocal(lvl, "start");
+        var def = into[i] || (into[i] = {});
+        if (fmt) def.fmt = fmt.getAttribute("w:val") || "decimal";
+        if (text) def.text = text.getAttribute("w:val") || "";
+        if (start) {
+          var s = parseInt(start.getAttribute("w:val") || "", 10);
+          if (isFinite(s)) def.start = s;
+        }
+      });
+    }
+    var abstracts = Object.create(null);
+    childrenLocal(root, "abstractNum").forEach(function (a) {
+      var levels = [];
+      readLevels(a, levels);
+      abstracts[a.getAttribute("w:abstractNumId")] = levels;
+    });
+    childrenLocal(root, "num").forEach(function (num) {
+      var ref = firstLocal(num, "abstractNumId");
+      var base = (ref && abstracts[ref.getAttribute("w:val")]) || [];
+      var levels = base.map(function (d) {
+        return d ? Object.assign({}, d) : d;
+      });
+      childrenLocal(num, "lvlOverride").forEach(function (ov) {
+        var i = parseInt(ov.getAttribute("w:ilvl") || "0", 10) || 0;
+        var so = firstLocal(ov, "startOverride");
+        if (so) {
+          var s = parseInt(so.getAttribute("w:val") || "", 10);
+          if (isFinite(s)) (levels[i] || (levels[i] = {})).start = s;
+        }
+        readLevels(ov, levels);
+      });
+      lists[num.getAttribute("w:numId")] = levels;
+    });
+    return lists;
+  }
+
+  function emptyEnv(docId) {
+    return {
+      docId: docId || "",
+      styles: readStyles(null),
+      numbering: Object.create(null),
+      theme: null,
+      nextLabel: listCounter(),
+    };
+  }
+
+  function extractParagraph(pEl, pendingImages, rels, basePart, env) {
+    if (!env || typeof env !== "object") env = emptyEnv(env);
+    var docId = env.docId;
+    var styles = env.styles;
+
+    var pPr = firstLocal(pEl, "pPr");
+    var direct = readParaProps(pPr);
+    var styleId =
+      direct.styleId !== undefined && direct.styleId !== null
+        ? direct.styleId
+        : styles.defaultPara;
+    var style = resolveStyle(styles, styleId);
+    var para = Object.assign({}, styles.para, style.para, direct);
+    var base = Object.assign({}, styles.run, style.run);
+
     var isHeading = false,
       headingLevel = 0;
-    if (styleVal && /^Heading([1-6])/.test(styleVal)) {
-      isHeading = true;
+    if (style.heading) {
+      headingLevel = style.heading;
+    } else if (styleId && /^Heading([1-9])/.test(styleId)) {
       headingLevel = parseInt(RegExp.$1, 10);
+    } else if (para.outline !== undefined && para.outline >= 0 && para.outline < 9) {
+      headingLevel = para.outline + 1;
     }
+    isHeading = headingLevel > 0;
+
+    // numId 0 is how a paragraph says it is not in the list its style
+    // would otherwise put it in.
+    var isListItem =
+      para.numId !== undefined && para.numId !== null && para.numId !== "0";
+    var ilvl = isListItem ? para.ilvl || 0 : 0;
+    var label = isListItem
+      ? env.nextLabel(para.numId, ilvl, env.numbering[para.numId])
+      : null;
 
     var segments = [];
+
+    function runProps(rPr) {
+      var own = readRunProps(rPr, env.theme);
+      var props = Object.assign({}, base);
+      if (own.styleId) Object.assign(props, resolveStyle(styles, own.styleId).run);
+      Object.assign(props, own);
+      return props;
+    }
 
     function walk(node, ctx) {
       Array.from(node.childNodes).forEach(function (child) {
@@ -117,27 +1087,22 @@
           else if (anchor) href = "#" + anchor;
           walk(child, Object.assign({}, ctx, { href: href }));
         } else if (ln === "r") {
-          var rPr = firstLocal(child, "rPr");
-          var bold = rPr
-            ? onOff(firstLocal(rPr, "b")) || onOff(firstLocal(rPr, "bCs"))
-            : false;
-          var italic = rPr
-            ? onOff(firstLocal(rPr, "i")) || onOff(firstLocal(rPr, "iCs"))
-            : false;
-          var underline = rPr ? onOff(firstLocal(rPr, "u")) : false;
-          var strike = rPr ? onOff(firstLocal(rPr, "strike")) : false;
-          var colorEl = rPr && firstLocal(rPr, "color");
-          var color = colorEl ? hexColor(colorEl.getAttribute("w:val")) : null;
+          var props = runProps(firstLocal(child, "rPr"));
           Array.from(child.childNodes).forEach(function (tn) {
             if (tn.nodeType !== 1) return;
             if (tn.localName === "t" || tn.localName === "delText") {
               segments.push({
                 text: tn.textContent,
-                bold: bold,
-                italic: italic,
-                underline: underline,
-                strike: strike,
-                color: color,
+                bold: !!props.bold,
+                italic: !!props.italic,
+                underline: !!props.underline,
+                strike: !!props.strike,
+                color: props.color || null,
+                size: props.size || null,
+                font: props.font || null,
+                highlight: props.highlight || null,
+                vert: props.vert || null,
+                caps: !!props.caps,
                 trackType: ctx.trackType || null,
                 author: ctx.author || null,
                 href: ctx.href || null,
@@ -147,15 +1112,35 @@
             } else if (tn.localName === "tab") {
               segments.push({
                 text: "\t",
-                bold: false,
+                bold: !!base.bold,
+                italic: !!base.italic,
+                color: base.color || null,
+                size: base.size || null,
+                font: base.font || null,
                 isDel: false,
                 isImage: false,
                 trackType: ctx.trackType || null,
               });
-            } else if (tn.localName === "br") {
+            } else if (tn.localName === "br" || tn.localName === "cr") {
               segments.push({
                 text: "\n",
-                bold: false,
+                bold: !!base.bold,
+                italic: !!base.italic,
+                color: base.color || null,
+                size: base.size || null,
+                font: base.font || null,
+                isDel: false,
+                isImage: false,
+                trackType: ctx.trackType || null,
+              });
+            } else if (tn.localName === "noBreakHyphen") {
+              segments.push({
+                text: "\u2011",
+                bold: !!props.bold,
+                italic: !!props.italic,
+                color: props.color || null,
+                size: props.size || null,
+                font: props.font || null,
                 isDel: false,
                 isImage: false,
                 trackType: ctx.trackType || null,
@@ -163,11 +1148,15 @@
             } else if (tn.localName === "drawing") {
               var blip = allLocal(tn, "blip")[0];
               var embed = blip ? blip.getAttribute("r:embed") : null;
+              var extent = allLocal(tn, "extent")[0];
+              var cx = extent ? parseInt(extent.getAttribute("cx") || "", 10) : NaN;
               var seg = {
-                text: "\uFFFC",
+                text: "￼",
                 isImage: true,
                 isDel: false,
                 relId: embed,
+                // English Metric Units: 9,525 to the pixel.
+                widthPx: cx > 0 ? cx / 9525 : null,
                 trackType: ctx.trackType || null,
                 dataUrl: null,
                 _rels: rels,
@@ -178,18 +1167,19 @@
               // A drawing can carry a text box as well as a picture, and
               // its paragraphs sit below this point.
               walk(tn, ctx);
-            } else if (tn.localName === "footnoteReference") {
-              var fnRefId = tn.getAttribute("w:id");
-              segments.push({
-                text: fnRefId,
-                isFootnoteRef: true,
-                footnoteId: fnRefId,
-                anchorId: (docId || "") + "fn-" + fnRefId,
-                refAnchorId: (docId || "") + "fnref-" + fnRefId,
-                isDel: false,
-                isImage: false,
-                trackType: ctx.trackType || null,
-              });
+            } else if (
+              tn.localName === "footnoteReference" ||
+              tn.localName === "endnoteReference"
+            ) {
+              var noteSeg = noteRefSegment(
+                {
+                  kind: tn.localName === "endnoteReference" ? "en" : "fn",
+                  id: tn.getAttribute("w:id"),
+                },
+                docId || "",
+              );
+              noteSeg.trackType = ctx.trackType || null;
+              segments.push(noteSeg);
             } else {
               // Anything else inside a run can still hold text. A text
               // box -- VML w:pict, or the DrawingML equivalent -- holds
@@ -213,41 +1203,24 @@
       headingLevel: headingLevel,
       isListItem: isListItem,
       ilvl: ilvl,
+      listLabel: label ? label.label : "",
+      listKind: label ? label.kind : "",
+      para: {
+        align: para.align,
+        indL: para.indL,
+        indR: para.indR,
+        indFirst: para.indFirst,
+        before: para.before,
+        after: para.after,
+      },
+      base: {
+        bold: !!base.bold,
+        italic: !!base.italic,
+        color: base.color || null,
+        size: base.size || null,
+        font: base.font || null,
+      },
       segments: segments,
-    };
-  }
-
-  function makeParagraphBlock(pd, sectionLabel) {
-    return {
-      sectionLabel: sectionLabel,
-      isHeading: pd.isHeading,
-      headingLevel: pd.headingLevel,
-      isListItem: pd.isListItem,
-      ilvl: pd.ilvl,
-      segments: pd.segments,
-      isTableRow: false,
-      isDivider: false,
-    };
-  }
-  function makeTableRowBlock(cells, sectionLabel) {
-    return {
-      sectionLabel: sectionLabel,
-      isTableRow: true,
-      cells: cells,
-      isDivider: false,
-    };
-  }
-  function makeDividerBlock(label) {
-    return {
-      sectionLabel: "divider",
-      isDivider: true,
-      segments: [
-        {
-          text: "\u2014 " + label + " \u2014",
-          isDel: false,
-          isImage: false,
-        },
-      ],
     };
   }
 
@@ -272,9 +1245,70 @@
     rels,
     sectionLabel,
     basePart,
-    docId,
+    env,
   ) {
+    if (!env || typeof env !== "object") env = emptyEnv(env);
     var blocks = [];
+
+    function tableRows(tbl) {
+      // The table's own column widths, for a cell that does not state one.
+      var grid = [];
+      var tblGrid = firstLocal(tbl, "tblGrid");
+      if (tblGrid) {
+        childrenLocal(tblGrid, "gridCol").forEach(function (gc) {
+          grid.push(parseInt(gc.getAttribute("w:w") || "", 10) || 0);
+        });
+      }
+      var rows = childrenLocal(tbl, "tr");
+      rows.forEach(function (tr, ri) {
+        var col = 0;
+        var cells = childrenLocal(tr, "tc").map(function (tc) {
+          var segs = [];
+          var cellBase = null,
+            cellAlign = null;
+          // descendantParagraphs rather than direct children: a cell
+          // holding a nested table used to contribute nothing but its
+          // own loose paragraphs, so the nested rows vanished.
+          descendantParagraphs(tc).forEach(function (p, idx) {
+            if (idx > 0) segs.push({ text: "\n", isDel: false, isImage: false });
+            var pd = extractParagraph(p, pendingImages, rels, basePart, env);
+            if (idx === 0) {
+              cellBase = pd.base;
+              cellAlign = pd.para.align || null;
+            }
+            segs = segs.concat(pd.segments);
+          });
+          var tcPr = firstLocal(tc, "tcPr");
+          var shd = tcPr && firstLocal(tcPr, "shd");
+          var fill = shd ? hexColor(shd.getAttribute("w:fill")) : null;
+          if (fill === "FFFFFF") fill = null;
+          var spanEl = tcPr && firstLocal(tcPr, "gridSpan");
+          var span = spanEl
+            ? Math.max(1, parseInt(spanEl.getAttribute("w:val") || "1", 10) || 1)
+            : 1;
+          var tcW = tcPr && firstLocal(tcPr, "tcW");
+          var width = 0;
+          if (tcW && (tcW.getAttribute("w:type") || "dxa") === "dxa")
+            width = parseInt(tcW.getAttribute("w:w") || "", 10) || 0;
+          if (!width) {
+            for (var g = col; g < col + span && g < grid.length; g++)
+              width += grid[g];
+          }
+          col += span;
+          return {
+            segs: segs,
+            fill: fill,
+            width: width > 0 ? width : null,
+            align: cellAlign,
+            base: cellBase || {},
+          };
+        });
+        var row = makeTableRowBlock(cells, sectionLabel);
+        row.rowFirst = ri === 0;
+        row.rowLast = ri === rows.length - 1;
+        blocks.push(row);
+      });
+    }
 
     function visit(el) {
       Array.from(el.childNodes).forEach(function (child) {
@@ -283,37 +1317,12 @@
         if (ln === "p") {
           blocks.push(
             makeParagraphBlock(
-              extractParagraph(child, pendingImages, rels, basePart, docId),
+              extractParagraph(child, pendingImages, rels, basePart, env),
               sectionLabel,
             ),
           );
         } else if (ln === "tbl") {
-          childrenLocal(child, "tr").forEach(function (tr) {
-            var cells = childrenLocal(tr, "tc").map(function (tc) {
-              var segs = [];
-              // descendantParagraphs rather than direct children: a cell
-              // holding a nested table used to contribute nothing but its
-              // own loose paragraphs, so the nested rows vanished.
-              descendantParagraphs(tc).forEach(function (p, idx) {
-                if (idx > 0)
-                  segs.push({ text: "\n", isDel: false, isImage: false });
-                var pd = extractParagraph(
-                  p,
-                  pendingImages,
-                  rels,
-                  basePart,
-                  docId,
-                );
-                segs = segs.concat(pd.segments);
-              });
-              var tcPr = firstLocal(tc, "tcPr");
-              var shd = tcPr && firstLocal(tcPr, "shd");
-              var fill = shd ? hexColor(shd.getAttribute("w:fill")) : null;
-              if (fill === "FFFFFF") fill = null;
-              return { segs: segs, fill: fill };
-            });
-            blocks.push(makeTableRowBlock(cells, sectionLabel));
-          });
+          tableRows(child);
         } else {
           // Not a block itself, but it may contain them. Content controls
           // (w:sdt), text boxes (w:txbxContent), smart tags and custom XML
@@ -338,166 +1347,25 @@
     rels,
     sectionLabel,
     basePart,
-    docId,
+    env,
   ) {
     var segs = [prefixSeg];
+    var base = null;
     childrenLocal(containerEl, "p").forEach(function (p, idx) {
       if (idx > 0) segs.push({ text: " ", isDel: false, isImage: false });
-      var pd = extractParagraph(p, pendingImages, rels, basePart, docId);
+      var pd = extractParagraph(p, pendingImages, rels, basePart, env);
+      if (idx === 0) base = pd.base;
       segs = segs.concat(pd.segments);
     });
-    return {
-      sectionLabel: sectionLabel,
-      isHeading: false,
-      isListItem: false,
-      ilvl: 0,
-      segments: segs,
-      isTableRow: false,
-      isDivider: false,
-    };
-  }
-
-  // Images and footnote references are diffed as tokens, so they need a
-  // spelling inside the plain text that the word tokeniser can pick out
-  // again. Both are wrapped in their own marker character at each end:
-  // the fingerprint of an image is base64, which has no delimiter of its
-  // own, so an opening marker alone left "fig<mark>1892:AAB...</mark>one"
-  // as a single word whenever an image sat against text with no space.
-  // That word matched nothing in the token map and was printed verbatim.
-  var IMG_MARK = "\uFFFC";
-  var FN_MARK = "\uFFFD";
-
-  function imageToken(seg) {
-    return IMG_MARK + (seg.imgFingerprint || seg.relId || "?") + IMG_MARK;
-  }
-  function footnoteToken(seg) {
-    return FN_MARK + (seg.footnoteId || "?") + FN_MARK;
-  }
-  // Marker characters occurring in the document's own text would make a
-  // token ambiguous, so they are dropped from the text used for
-  // alignment. They stay in the rendered markup, so a paragraph that
-  // differs only by one still shows up -- as a formatting change.
-  function stripTokenMarks(s) {
-    return String(s).replace(/[\uFFFC\uFFFD]/g, "");
-  }
-
-  // Record every image and footnote segment under the exact token that
-  // plainTextForDiff will emit for it, so the renderer can turn a token
-  // back into the thing it stands for. Both sides go through the same two
-  // helpers; building the key separately is how they drifted before.
-  function indexTokens(block, segments) {
-    segments.forEach(function (s) {
-      if (s.isDel) return;
-      if (s.isImage) block.imageTokens[imageToken(s)] = s;
-      else if (s.isFootnoteRef || s.isFootnoteMarker)
-        block.footnoteTokens[footnoteToken(s)] = s;
-    });
-  }
-
-  function plainTextForDiff(segments) {
-    return segments
-      .filter(function (s) {
-        return !s.isDel;
-      })
-      .map(function (s) {
-        if (s.isImage) return imageToken(s);
-        if (s.isFootnoteRef || s.isFootnoteMarker) return footnoteToken(s);
-        return stripTokenMarks(s.text);
-      })
-      .join("");
-  }
-
-  function renderSegmentsHtml(segments) {
-    return segments
-      .map(function (s) {
-        if (s.isFootnoteRef) {
-          return (
-            '<sup class="fn-ref" id="' +
-            escapeHtml(s.refAnchorId) +
-            '"><a class="fn-ref-link" href="#' +
-            escapeHtml(s.anchorId) +
-            '" title="Jump to footnote ' +
-            escapeHtml(s.footnoteId) +
-            '">' +
-            escapeHtml(s.footnoteId) +
-            "</a></sup>"
-          );
-        }
-        if (s.isFootnoteMarker) {
-          return (
-            '<sup class="fn-marker" id="' +
-            escapeHtml(s.anchorId) +
-            '"><a class="fn-marker-link" href="#' +
-            escapeHtml(s.backAnchorId) +
-            '" title="Back to text">' +
-            escapeHtml(s.footnoteId) +
-            "</a></sup>"
-          );
-        }
-        if (s.isImage) {
-          var cls =
-            "inline-img" +
-            (s.trackType === "ins" ? " trk-ins" : "") +
-            (s.trackType === "del" ? " trk-del" : "");
-          var title = s.trackType
-            ? "Tracked " + s.trackType + (s.author ? " by " + s.author : "")
-            : "Embedded image";
-          return (
-            '<span class="' +
-            cls +
-            '" title="' +
-            escapeHtml(title) +
-            '">' +
-            (s.dataUrl ? '<img src="' + s.dataUrl + '">' : "[image]") +
-            "</span>"
-          );
-        }
-        var text = escapeHtml(s.text)
-          .replace(/\t/g, "&nbsp;&nbsp;&nbsp;&nbsp;")
-          .replace(/\n/g, "<br>");
-        var style = "";
-        if (s.bold) style += "font-weight:600;";
-        if (s.italic) style += "font-style:italic;";
-        if (s.underline) style += "text-decoration:underline;";
-        if (s.strike) style += "text-decoration:line-through;";
-        if (s.color) style += "color:#" + s.color + ";";
-        var cls = [];
-        var title = "";
-        if (s.isDel) {
-          cls.push("trk-del");
-          title = "Tracked deletion" + (s.author ? " by " + s.author : "");
-        } else if (s.trackType === "ins") {
-          cls.push("trk-ins");
-          title = "Tracked insertion" + (s.author ? " by " + s.author : "");
-        }
-        var inner = text;
-        if (s.href) {
-          inner =
-            '<a class="doc-link" data-href="' +
-            escapeHtml(s.href) +
-            '" title="' +
-            escapeHtml(s.href) +
-            '">' +
-            inner +
-            "</a>";
-        }
-        return (
-          "<span" +
-          (cls.length ? ' class="' + cls.join(" ") + '"' : "") +
-          (style ? ' style="' + style + '"' : "") +
-          (title ? ' title="' + escapeHtml(title) + '"' : "") +
-          ">" +
-          inner +
-          "</span>"
-        );
-      })
-      .join("");
+    return makeParagraphBlock({ segments: segs, base: base || {} }, sectionLabel);
   }
 
   async function extractDocxStructured(file) {
-    var docId = "d" + Math.random().toString(36).slice(2, 9) + "_";
-    var buf = await file.arrayBuffer();
-    var zip = await JSZip.loadAsync(buf);
+    return extractDocxFromZip(await JSZip.loadAsync(await file.arrayBuffer()));
+  }
+
+  async function extractDocxFromZip(zip) {
+    var docId = newDocId();
 
     async function xml(path) {
       var f = zip.file(path);
@@ -545,8 +1413,31 @@
 
     var docXml = await xml("word/document.xml");
     if (!docXml)
-      throw new Error("Missing word/document.xml \u2014 not a valid .docx");
+      throw new Error("Missing word/document.xml — not a valid .docx");
     var docRels = await relsFor("word/document.xml");
+
+    // The fonts a theme stands for, the styles, and the lists: together
+    // they are what turns "this paragraph is a Heading 1" into a size, a
+    // weight and a colour.
+    var theme = null;
+    var themeXml = await xml("word/theme/theme1.xml");
+    if (themeXml) {
+      var major = allLocal(themeXml, "majorFont")[0],
+        minor = allLocal(themeXml, "minorFont")[0];
+      var majorLatin = major && firstLocal(major, "latin"),
+        minorLatin = minor && firstLocal(minor, "latin");
+      theme = {
+        major: majorLatin ? majorLatin.getAttribute("typeface") : null,
+        minor: minorLatin ? minorLatin.getAttribute("typeface") : null,
+      };
+    }
+    var env = {
+      docId: docId,
+      theme: theme,
+      styles: readStyles(await xml("word/styles.xml"), theme),
+      numbering: readNumbering(await xml("word/numbering.xml")),
+      nextLabel: listCounter(),
+    };
 
     var pendingImages = [];
     var blocks = [];
@@ -575,7 +1466,7 @@
           hRels,
           "header",
           hp,
-          docId,
+          env,
         ),
       );
     }
@@ -589,7 +1480,7 @@
           docRels,
           "body",
           "word/document.xml",
-          docId,
+          env,
         ),
       );
 
@@ -606,44 +1497,49 @@
           fRels,
           "footer",
           fp,
-          docId,
+          env,
         ),
       );
     }
 
-    var footnotesXml = await xml("word/footnotes.xml");
-    if (footnotesXml) {
-      var fnRels = await relsFor("word/footnotes.xml");
-      var fns = childrenLocal(footnotesXml.documentElement, "footnote").filter(
+    // Footnotes and endnotes are the same thing in two parts of the
+    // package, down to the separator entries that are not notes at all.
+    var NOTE_PARTS = [
+      { path: "word/footnotes.xml", el: "footnote", kind: "fn", label: "FOOTNOTES", section: "footnote" },
+      { path: "word/endnotes.xml", el: "endnote", kind: "en", label: "ENDNOTES", section: "endnote" },
+    ];
+    for (var ni = 0; ni < NOTE_PARTS.length; ni++) {
+      var np = NOTE_PARTS[ni];
+      var notesXml = await xml(np.path);
+      if (!notesXml) continue;
+      var nRels = await relsFor(np.path);
+      var notes = childrenLocal(notesXml.documentElement, np.el).filter(
         function (f) {
           var t = f.getAttribute("w:type");
-          return t !== "separator" && t !== "continuationSeparator";
+          return (
+            t !== "separator" &&
+            t !== "continuationSeparator" &&
+            t !== "continuationNotice"
+          );
         },
       );
-      if (fns.length) {
-        blocks.push(makeDividerBlock("FOOTNOTES"));
-        fns.forEach(function (f) {
-          var id = f.getAttribute("w:id");
-          blocks.push(
-            footnoteOrCommentBlock(
-              f,
-              {
-                text: id,
-                isFootnoteMarker: true,
-                footnoteId: id,
-                anchorId: docId + "fn-" + id,
-                backAnchorId: docId + "fnref-" + id,
-                isDel: false,
-                isImage: false,
-              },
-              pendingImages,
-              fnRels,
-              "footnote",
-              "word/footnotes.xml",
+      if (!notes.length) continue;
+      blocks.push(makeDividerBlock(np.label));
+      for (var nj = 0; nj < notes.length; nj++) {
+        blocks.push(
+          footnoteOrCommentBlock(
+            notes[nj],
+            noteMarkerSegment(
+              { kind: np.kind, id: notes[nj].getAttribute("w:id") },
               docId,
             ),
-          );
-        });
+            pendingImages,
+            nRels,
+            np.section,
+            np.path,
+            env,
+          ),
+        );
       }
     }
 
@@ -668,7 +1564,7 @@
               cRels,
               "comment",
               "word/comments.xml",
-              docId,
+              env,
             ),
           );
         });
@@ -697,63 +1593,165 @@
       }),
     );
 
-    blocks.forEach(function (b) {
-      b.imageTokens = {};
-      b.footnoteTokens = {};
-      if (b.isTableRow) {
-        b.text = b.cells
-          .map(function (c) {
-            return plainTextForDiff(c.segs);
-          })
-          .join(" | ");
-        b.html =
-          '<div class="row-cells">' +
-          b.cells
-            .map(function (c) {
-              var style = c.fill ? ' style="background:#' + c.fill + ';"' : "";
-              return (
-                '<div class="row-cell"' +
-                style +
-                ">" +
-                renderSegmentsHtml(c.segs) +
-                "</div>"
-              );
-            })
-            .join("") +
-          "</div>";
-        b.cells.forEach(function (c) {
-          indexTokens(b, c.segs);
-        });
-      } else {
-        b.text = plainTextForDiff(b.segments);
-        b.html = renderSegmentsHtml(b.segments);
-        indexTokens(b, b.segments);
+    return finalizeBlocks(blocks, docId);
+  }
+
+  // ============================== OPENING A FILE ==============================
+  //
+  // .docx is read above. The other kinds -- OpenDocument, RTF, the binary
+  // .doc, plain text, HTML -- each have a reader in js/formats/, which
+  // registers itself on window.diffPadFormats when its script loads.
+  //
+  // What a file is, is decided by its first bytes wherever they say: a
+  // ".doc" is very often RTF, or a .docx somebody renamed, and each of
+  // those is opened as what it is. The name only has to be one this page
+  // knows, so that a photograph or a spreadsheet is turned away with a
+  // message rather than read as text.
+
+  var KNOWN_NAME =
+    /\.(docx|docm|dotx|dotm|doc|dot|rtf|odt|ott|fodt|txt|text|md|markdown|html?|xhtml)$/i;
+  var ACCEPTED = "Word (.docx, .doc), RTF, OpenDocument (.odt), text or HTML";
+
+  function userError(message) {
+    var e = new Error(message);
+    e.userMessage = message;
+    return e;
+  }
+
+  function sniffFormat(bytes) {
+    if (
+      bytes.length > 3 &&
+      bytes[0] === 0x50 &&
+      bytes[1] === 0x4b &&
+      (bytes[2] === 3 || bytes[2] === 5 || bytes[2] === 7)
+    )
+      return "zip";
+    var OLE = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    if (
+      bytes.length > 8 &&
+      OLE.every(function (b, i) {
+        return bytes[i] === b;
+      })
+    )
+      return "ole";
+    // Past a byte-order mark and any blank space, what does the text open with?
+    var head = "";
+    for (var i = 0; i < bytes.length && head.length < 256; i++) {
+      var c = bytes[i];
+      if (c === 0 || c === 0xef || c === 0xbb || c === 0xbf || c === 0xff || c === 0xfe)
+        continue;
+      head += String.fromCharCode(c);
+    }
+    head = head.replace(/^\s+/, "");
+    if (/^\{\\rtf/.test(head)) return "rtf";
+    if (/<office:document[\s>]/.test(head)) return "fodt";
+    if (/^(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<(!doctype\s+html|html[\s>])/i.test(head))
+      return "html";
+    return null;
+  }
+
+  // Text of unknown encoding: a byte-order mark says so outright; failing
+  // that it is UTF-8 if it is valid UTF-8, and the Windows code page that
+  // older files were written in if it is not.
+  function decodeText(bytes) {
+    function dec(label, from, fatal) {
+      return new TextDecoder(label, { fatal: !!fatal }).decode(
+        from ? bytes.subarray(from) : bytes,
+      );
+    }
+    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe)
+      return dec("utf-16le", 2);
+    if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff)
+      return dec("utf-16be", 2);
+    if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+      return dec("utf-8", 3);
+    try {
+      return dec("utf-8", 0, true);
+    } catch (e) {
+      return dec("windows-1252");
+    }
+  }
+
+  function base64FromBytes(bytes) {
+    var out = "";
+    for (var i = 0; i < bytes.length; i += 0x6000) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x6000));
+    }
+    return btoa(out);
+  }
+
+  // Enough of a picture's bytes to tell two pictures apart: the same form
+  // the .docx reader uses, so one picture has one fingerprint.
+  function imageFromBytes(bytes, mime) {
+    var base64 = base64FromBytes(bytes);
+    return {
+      dataUrl: "data:" + mime + ";base64," + base64,
+      fingerprint: base64.length + ":" + base64.slice(-16),
+    };
+  }
+
+  // What a picture is, from how its bytes begin; null if it is not a kind
+  // a browser can draw.
+  function imageMime(bytes) {
+    if (bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47)
+      return "image/png";
+    if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
+      return "image/jpeg";
+    if (bytes.length > 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38)
+      return "image/gif";
+    if (bytes.length > 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return "image/bmp";
+    return null;
+  }
+
+  // What every reader is given to work with.
+  var READER_TOOLS = {
+    formatNumber: formatNumber,
+    bulletGlyph: bulletGlyph,
+    listCounter: listCounter,
+    hexColor: hexColor,
+    decodeText: decodeText,
+    imageFromBytes: imageFromBytes,
+    imageMime: imageMime,
+  };
+
+  async function readDocument(file) {
+    var buffer = await file.arrayBuffer();
+    var bytes = new Uint8Array(buffer);
+    var formats = window.diffPadFormats || {};
+    var name = String(file.name || "");
+    var kind = sniffFormat(bytes);
+
+    function read(format, input) {
+      if (typeof formats[format] !== "function")
+        throw new Error("no reader is loaded for " + format);
+      var docId = newDocId();
+      return Promise.resolve(formats[format](input, READER_TOOLS)).then(
+        function (raw) {
+          return finalizeBlocks(blocksFromRaw(raw, docId), docId);
+        },
+      );
+    }
+
+    // Tell the two kinds of package apart by what is inside.
+    if (kind === "zip" || /\.(docx|docm|dotx|dotm|odt|ott)$/i.test(name)) {
+      var zip = await JSZip.loadAsync(buffer);
+      if (!zip.file("word/document.xml") && zip.file("content.xml"))
+        return read("odt", zip);
+      return extractDocxFromZip(zip);
+    }
+    if (kind === "ole") return read("doc", bytes);
+    if (kind === "rtf") return read("rtf", bytes);
+    if (kind === "fodt" || /\.fodt$/i.test(name)) return read("fodt", decodeText(bytes));
+    if (kind === "html" || /\.(html?|xhtml)$/i.test(name))
+      return read("html", decodeText(bytes));
+    if (/\.(doc|dot|rtf)$/i.test(name)) {
+      // Named as a Word or RTF document and not one. A few really are plain
+      // text; anything with binary in it is not something to show as text.
+      for (var i = 0; i < bytes.length && i < 4096; i++) {
+        if (bytes[i] === 0) throw new Error("not a document this page can read");
       }
-
-      // b.html carries docId, which is freshly randomised on every read,
-      // so the same file read twice produces two different strings for
-      // any paragraph holding a footnote anchor. Comparing b.html to
-      // decide "formatting changed" therefore reported every one of
-      // those paragraphs as changed against an identical copy of itself.
-      // fmtKey is the same markup with the per-read id taken back out,
-      // and it -- not b.html -- is what the alignment compares.
-      b.fmtKey = docId ? b.html.split(docId).join("") : b.html;
-
-      // A paragraph that is entirely a tracked deletion (or otherwise has no
-      // accepted text but still has visible markup, e.g. an in-source comment
-      // anchor) must never be treated as an interchangeable "blank paragraph"
-      // during alignment -- give it a key of its own so it surfaces as its
-      // own change instead of silently absorbing into an unrelated blank.
-      // The key is the markup itself and not a counter: the counter ran across
-      // both documents at once, so the same deleted paragraph was handed a
-      // different key on each side and always came out as one removal plus one
-      // addition -- even when a file was compared with itself.
-      if (b.text === "" && b.fmtKey !== "") {
-        b.text = "\u0000" + b.fmtKey;
-      }
-    });
-
-    return blocks;
+    }
+    return read("text", decodeText(bytes));
   }
 
   // ============================== DIFF ENGINE ==============================
@@ -994,12 +1992,29 @@
           ins = insBuf[k];
         if (d !== undefined && ins !== undefined) {
           var wordOps = lcsDiff(tokenizeWords(d.text), tokenizeWords(ins.text));
-          rows.push({
+          var row = {
             kind: "modified",
             left: d,
             right: ins,
             wordOps: wordOps,
-          });
+          };
+          // Two rows of a table with the same number of cells are compared
+          // cell by cell, so the result can be drawn as a row of a table.
+          if (
+            d.isTableRow &&
+            ins.isTableRow &&
+            d.cells &&
+            ins.cells &&
+            d.cells.length === ins.cells.length
+          ) {
+            row.cellOps = d.cells.map(function (c, ci) {
+              return lcsDiff(
+                tokenizeWords(plainTextForDiff(c.segs)),
+                tokenizeWords(plainTextForDiff(ins.cells[ci].segs)),
+              );
+            });
+          }
+          rows.push(row);
         } else if (d !== undefined) {
           rows.push({ kind: "removed", left: d, right: null });
         } else {
@@ -1030,48 +2045,69 @@
   }
 
   function renderImageToken(token, block) {
-    if (!block || !block.imageTokens || token.charAt(0) !== "\uFFFC")
+    if (!block || !block.imageTokens || token.charAt(0) !== "￼")
       return null;
     var seg = block.imageTokens[token];
     if (!seg) return null;
-    return (
-      '<span class="inline-img"><img src="' + (seg.dataUrl || "") + '"></span>'
-    );
+    return '<span class="inline-img">' + imageTagHtml(seg) + "</span>";
   }
 
   function renderFootnoteToken(token, block) {
-    if (!block || !block.footnoteTokens || token.charAt(0) !== "\uFFFD")
+    if (!block || !block.footnoteTokens || token.charAt(0) !== "�")
       return null;
     var seg = block.footnoteTokens[token];
     if (!seg) return null;
-    if (seg.isFootnoteRef) {
-      return (
-        '<sup class="fn-ref" id="' +
-        escapeHtml(seg.refAnchorId) +
-        '"><a class="fn-ref-link" href="#' +
-        escapeHtml(seg.anchorId) +
-        '" title="Jump to footnote ' +
-        escapeHtml(seg.footnoteId) +
-        '">' +
-        escapeHtml(seg.footnoteId) +
-        "</a></sup>"
-      );
-    }
-    if (seg.isFootnoteMarker) {
-      return (
-        '<sup class="fn-marker" id="' +
-        escapeHtml(seg.anchorId) +
-        '"><a class="fn-marker-link" href="#' +
-        escapeHtml(seg.backAnchorId) +
-        '" title="Back to text">' +
-        escapeHtml(seg.footnoteId) +
-        "</a></sup>"
-      );
-    }
+    if (seg.isFootnoteRef) return footnoteRefHtml(seg);
+    if (seg.isFootnoteMarker) return footnoteMarkerHtml(seg);
     return null;
   }
 
+  // The word diff of one block, drawn for one side. `leftBlock` and
+  // `rightBlock` are what the two token streams came from: they turn a
+  // marked token back into its picture or footnote marker, and -- where
+  // they carry the positions of their runs -- give each word back the
+  // bold, the colour or the link of the run it was taken from.
   function renderWordDiff(ops, side, leftBlock, rightBlock) {
+    var own = side === "left" ? leftBlock : rightBlock;
+    var spans = (own && own.spans) || null;
+    var base = (own && own.base) || null;
+    var pos = 0; // how far into this side's plain text the walk has got
+    var si = 0;
+
+    function plain(text, visibleWs) {
+      return visibleWs ? escapeHtmlVisibleWs(text) : escapeHtml(text);
+    }
+
+    // `text` is the token at [pos, pos + text.length) on this side.
+    function formatted(text, visibleWs) {
+      if (!spans) return plain(text, visibleWs);
+      var start = pos,
+        end = pos + text.length;
+      while (si < spans.length && spans[si].end <= start) si++;
+      var out = "";
+      var at = start;
+      var k = si;
+      while (at < end) {
+        var sp = spans[k];
+        if (!sp || sp.start > at) {
+          // Between runs: an image, a footnote, the bar between two cells.
+          var gapEnd = sp ? Math.min(sp.start, end) : end;
+          out += plain(text.slice(at - start, gapEnd - start), visibleWs);
+          at = gapEnd;
+          continue;
+        }
+        var stop = Math.min(sp.end, end);
+        out += wrapRunHtml(
+          sp.seg,
+          plain(text.slice(at - start, stop - start), visibleWs),
+          base,
+        );
+        at = stop;
+        if (stop === sp.end) k++;
+      }
+      return out;
+    }
+
     var html = "";
     ops.forEach(function (o) {
       if (o.type === "equal") {
@@ -1082,7 +2118,8 @@
             ? renderFootnoteToken(o.a, leftBlock) ||
               renderFootnoteToken(o.a, rightBlock)
             : null;
-        html += eqImg || eqFn || escapeHtml(o.a);
+        html += eqImg || eqFn || formatted(o.a, false);
+        pos += o.a.length;
       } else if (o.type === "delete" && side === "left") {
         var delImg = renderImageToken(o.a, leftBlock);
         var delFn =
@@ -1093,11 +2130,9 @@
           html += '<span class="del">' + delFn + "</span>";
         } else {
           var isWs = o.a.trim() === "" && o.a.length > 0;
-          html +=
-            '<span class="del">' +
-            (isWs ? escapeHtmlVisibleWs(o.a) : escapeHtml(o.a)) +
-            "</span>";
+          html += '<span class="del">' + formatted(o.a, isWs) + "</span>";
         }
+        pos += o.a.length;
       } else if (o.type === "insert" && side === "right") {
         var insImg = renderImageToken(o.b, rightBlock);
         var insFn =
@@ -1108,11 +2143,9 @@
           html += '<span class="ins">' + insFn + "</span>";
         } else {
           var isWs2 = o.b.trim() === "" && o.b.length > 0;
-          html +=
-            '<span class="ins">' +
-            (isWs2 ? escapeHtmlVisibleWs(o.b) : escapeHtml(o.b)) +
-            "</span>";
+          html += '<span class="ins">' + formatted(o.b, isWs2) + "</span>";
         }
+        pos += o.b.length;
       }
     });
     return html;
@@ -1131,33 +2164,104 @@
     );
   }
 
-  function wrapBlockContent(block, innerHtml) {
+  var FMT_TAG = '<span class="fmt-tag">formatting changed</span>';
+
+  function styleAttr(css) {
+    return css ? ' style="' + css + '"' : "";
+  }
+
+  // Put a block's content into the element that makes it look like what it
+  // is: a paragraph, a heading, a list item with its number, a row of a
+  // table. `lead` and `tail` are the page's own labels -- which part of the
+  // document this is, that its formatting changed -- and go inside a
+  // paragraph but outside a table row.
+  function wrapBlockContent(block, innerHtml, lead, tail) {
+    lead = lead || "";
+    tail = tail || "";
     if (!block) return innerHtml;
     if (block.isDivider)
-      return '<div class="block-divider">' + innerHtml + "</div>";
-    if (block.isTableRow) return innerHtml;
-    if (block.isHeading)
+      return '<div class="block-divider"><span>' + innerHtml + "</span></div>";
+    if (block.isTableRow) {
+      // No "formatting changed" label on a row: there is nowhere to put
+      // one that does not break the table apart, and the row's colour
+      // already says it.
       return (
-        '<div class="block-heading h' +
-        block.headingLevel +
+        lead +
+        '<div class="row-cells' +
+        (block.rowFirst ? " row-first" : "") +
+        (block.rowLast ? " row-last" : "") +
         '">' +
         innerHtml +
         "</div>"
       );
+    }
+    var css = styleAttr(block.paraCss || "");
     if (block.isListItem) {
-      var bullet =
-        block.ilvl >= 2 ? "\u25aa" : block.ilvl === 1 ? "\u25e6" : "\u2022";
+      var label =
+        block.listLabel ||
+        (block.ilvl >= 2 ? "▪" : block.ilvl === 1 ? "◦" : "•");
       return (
-        '<div class="block-li"><span class="li-bullet" style="margin-left:' +
+        '<div class="block-li' +
+        (block.isHeading
+          ? " block-heading h" +
+            block.headingLevel +
+            (block.base && block.base.size ? " styled" : "")
+          : "") +
+        '"' +
+        css +
+        '><span class="li-bullet' +
+        (block.listKind === "number" ? " li-number" : "") +
+        '" style="margin-left:' +
         block.ilvl * 18 +
-        'px;">' +
-        bullet +
+        'pt;">' +
+        escapeHtml(label) +
         '</span><span class="li-text">' +
+        lead +
         innerHtml +
+        tail +
         "</span></div>"
       );
     }
-    return '<div class="block-p">' + innerHtml + "</div>";
+    if (block.isHeading)
+      return (
+        '<div class="block-heading h' +
+        block.headingLevel +
+        (block.base && block.base.size ? " styled" : "") +
+        '"' +
+        css +
+        ">" +
+        lead +
+        innerHtml +
+        tail +
+        "</div>"
+      );
+    return '<div class="block-p"' + css + ">" + lead + innerHtml + tail + "</div>";
+  }
+
+  // A changed table row, drawn as a row: each cell with its own word diff.
+  function renderRowDiff(cellOps, side, leftBlock, rightBlock) {
+    var own = side === "left" ? leftBlock : rightBlock;
+    function cellView(block, ci) {
+      return {
+        spans: block.cells[ci].spans,
+        base: block.cells[ci].base,
+        imageTokens: block.imageTokens,
+        footnoteTokens: block.footnoteTokens,
+      };
+    }
+    return own.cells
+      .map(function (c, ci) {
+        return rowCellHtml(
+          c,
+          renderWordDiff(
+            cellOps[ci],
+            side,
+            cellView(leftBlock, ci),
+            cellView(rightBlock, ci),
+          ),
+        );
+      })
+      .join("");
   }
 
   function renderCellForSide(
@@ -1167,43 +2271,71 @@
     wordOps,
     leftBlock,
     rightBlock,
+    cellOps,
+    edge,
   ) {
-    if (!block) return '<div class="cell gap"></div>';
+    // `edge` is "table-start" or "table-end" on the row of the diff where a
+    // table begins or has just ended.
+    edge = edge ? " " + edge : "";
+    if (!block) return '<div class="cell gap' + edge + '"></div>';
     var badge = sectionBadge(block);
-    var innerHtml, cellClass;
+    var innerHtml,
+      cellClass,
+      tail = "";
     if (kind === "modified") {
-      innerHtml = badge + renderWordDiff(wordOps, side, leftBlock, rightBlock);
-      cellClass = "cell modified";
+      var aTable = !!(leftBlock && leftBlock.isTableRow),
+        bTable = !!(rightBlock && rightBlock.isTableRow);
+      if (cellOps) {
+        innerHtml = renderRowDiff(cellOps, side, leftBlock, rightBlock);
+        cellClass = "cell modified";
+      } else if (aTable || bTable) {
+        // A row against a paragraph, or against a row with a different
+        // number of cells: there is no word-by-word answer that could be
+        // drawn as either, so each side is shown whole.
+        innerHtml = block.html;
+        cellClass = side === "left" ? "cell removed" : "cell added";
+      } else {
+        innerHtml = renderWordDiff(wordOps, side, leftBlock, rightBlock);
+        cellClass = "cell modified";
+      }
     } else if (kind === "removed") {
-      innerHtml = badge + block.html;
+      innerHtml = block.html;
       cellClass = "cell removed";
     } else if (kind === "added") {
-      innerHtml = badge + block.html;
+      innerHtml = block.html;
       cellClass = "cell added";
     } else if (kind === "format-changed") {
-      innerHtml =
-        badge + block.html + '<span class="fmt-tag">formatting changed</span>';
+      innerHtml = block.html;
+      tail = FMT_TAG;
       cellClass = "cell fmt-changed";
     } else {
-      innerHtml = badge + block.html;
+      innerHtml = block.html;
       cellClass = "cell";
     }
+    cellClass += edge;
+    if (block.isTableRow) cellClass += " is-row";
+    if (block.sectionLabel && block.sectionLabel !== "body")
+      cellClass += " sec-" + block.sectionLabel.replace(/[^a-z]/g, "");
     return (
       '<div class="' +
       cellClass +
       '">' +
-      wrapBlockContent(block, innerHtml) +
+      wrapBlockContent(block, innerHtml, badge, tail) +
       "</div>"
     );
   }
 
-  function renderBlockPreview(block) {
-    return wrapBlockContent(block, sectionBadge(block) + block.html);
+  function renderBlockPreview(block, i, all) {
+    var prev = all && i > 0 ? all[i - 1] : null;
+    var wasRow = !!(prev && prev.isTableRow);
+    var edge =
+      block.isTableRow && !wasRow ? "table-start" : !block.isTableRow && wasRow ? "table-end" : "";
+    return renderCellForSide(block, "equal", "left", null, block, block, null, edge);
   }
 
   // ============================== UI ==============================
   //
-  // The page is a Windows 95 desktop with one DiffPad window per document.
+  // The page is a Windows 95 desktop with one diffPad window per document.
   // The desktop, taskbar, Start menu and About box are static markup in
   // index.html; each window -- title bar, menu bar, page and status bar -- is
   // drawn here on every render.
@@ -1233,7 +2365,7 @@
 
   function windowTitle(side) {
     var doc = state[side];
-    return (doc ? escapeHtml(doc.fileName) : "Untitled") + " - DiffPad";
+    return (doc ? escapeHtml(doc.fileName) : "Untitled") + " - diffPad";
   }
 
   function swapButtonHtml(enabled) {
@@ -1288,7 +2420,7 @@
         menuItemHtml("export", "<u>E</u>xport diff…", side, ready),
       ]) +
       menuHtml("<u>H</u>elp", [
-        menuItemHtml("about", "<u>A</u>bout docxDiff", side, true),
+        menuItemHtml("about", "<u>A</u>bout diffPad", side, true),
       ]) +
       "</div>"
     );
@@ -1373,7 +2505,7 @@
           ICON_DIFFPAD +
           '<span class="task-text">' +
           name +
-          " - DiffPad</span></button>"
+          " - diffPad</span></button>"
         );
       })
       .join("");
@@ -1411,7 +2543,7 @@
     function pageFor(side) {
       if (!state[side]) return dropzoneHtml(side);
       return (
-        '<div class="page-scroll"><div class="doc-preview">' +
+        '<div class="page-scroll"><div class="doc-preview doc-sheet">' +
         state[side].blocks.map(renderBlockPreview).join("") +
         "</div></div>"
       );
@@ -1433,10 +2565,11 @@
       side +
       '">' +
       ICON_DOC_BIG +
-      '<p class="dz-title">Drag a .docx here or click to browse</p>' +
+      '<p class="dz-title">Drag a document here or click to browse</p>' +
       '<p class="dz-sub">Open the ' +
       label +
       " document</p>" +
+      '<p class="dz-kinds">.docx &middot; .doc &middot; .rtf &middot; .odt &middot; .txt &middot; .html</p>' +
       '<span class="btn95 dz-open"><span class="focus-ring">Open…</span></span>' +
       '<div class="dz-loading" style="display:none;"><span class="progress"></span>Reading document…</div>' +
       '<div class="dz-error" style="display:none;"></div>' +
@@ -1527,12 +2660,13 @@
   }
 
   function handleFile(side, file, dzEl) {
-    // .docm is the same package with macros allowed in it. Nothing here
-    // runs them -- only word/document.xml and its relations are read --
-    // so refusing the extension refused a document this tool can compare
-    // perfectly well.
-    if (!/\.doc[xm]$/i.test(file.name)) {
-      showDropzoneError(dzEl, "Please upload a .docx file.");
+    // The name is checked before anything is read: see readDocument for
+    // which names are known and what is then made of the contents.
+    if (!KNOWN_NAME.test(file.name)) {
+      showDropzoneError(
+        dzEl,
+        "That kind of file cannot be opened here. Open a " + ACCEPTED + " document.",
+      );
       return;
     }
     if (dzEl) {
@@ -1542,7 +2676,7 @@
       var err = dzEl.querySelector(".dz-error");
       if (err) err.style.display = "none";
     }
-    extractDocxStructured(file)
+    readDocument(file)
       .then(function (blocks) {
         state[side] = { fileName: file.name, blocks: blocks };
         renderApp();
@@ -1551,7 +2685,8 @@
         console.error(err);
         showDropzoneError(
           dzEl,
-          "Could not read that file. Is it a valid Word document?",
+          (err && err.userMessage) ||
+            "Could not read that file. Is it a valid document?",
         );
       });
   }
@@ -1572,7 +2707,17 @@
     });
 
     var gridHtml = rows
-      .map(function (r) {
+      .map(function (r, ri) {
+        // A table is set a little apart from the text around it. The room
+        // is given to both sides of a row at once, so that the two stay
+        // level whichever of them has the table.
+        var isRow = !!((r.left && r.left.isTableRow) || (r.right && r.right.isTableRow));
+        var prev = rows[ri - 1];
+        var wasRow = !!(
+          prev &&
+          ((prev.left && prev.left.isTableRow) || (prev.right && prev.right.isTableRow))
+        );
+        var edge = isRow && !wasRow ? "table-start" : !isRow && wasRow ? "table-end" : "";
         return (
           renderCellForSide(
             r.left,
@@ -1581,6 +2726,8 @@
             r.wordOps,
             r.left,
             r.right,
+            r.cellOps,
+            edge,
           ) +
           renderCellForSide(
             r.right,
@@ -1589,6 +2736,8 @@
             r.wordOps,
             r.left,
             r.right,
+            r.cellOps,
+            edge,
           )
         );
       })
@@ -1608,7 +2757,7 @@
       windowHtml("left", "") +
       windowHtml("right", "") +
       "</div>" +
-      '<div class="diff-scroll"><div class="diff-grid">' +
+      '<div class="diff-scroll"><div class="diff-grid doc-sheet">' +
       gridHtml +
       "</div></div>" +
       "</div>";
@@ -1712,7 +2861,7 @@
   // ------------------------------------------------ menus and commands
 
   // The Start menu and the game windows belong to js/desktop.js; this file
-  // looks after the two DiffPad windows and the About box.
+  // looks after the two diffPad windows and the About box.
   var aboutBox = document.getElementById("about");
 
   function closeMenus() {
@@ -1744,41 +2893,49 @@
     renderApp();
   }
 
+  // The exported page stands alone, so the part of css/style.css that
+  // draws a document is repeated here in the colours of a printed page.
+  var EXPORT_CSS =
+    "body{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:0;padding:24px;background:#f3f2ee;color:#1a1a18;}" +
+    "h2{font-size:15px;}" +
+    ".diff-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:16px;}" +
+    ".cell{padding:0 28px;background:#fff;font-family:'Times New Roman',Times,serif;font-size:11.5pt;line-height:1.35;white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;border-left:1px solid #d8d6cd;border-right:1px solid #d8d6cd;}" +
+    ".diff-grid>.cell:nth-child(-n+2){padding-top:24px;border-top:1px solid #d8d6cd;}.cell:nth-last-child(-n+2){padding-bottom:24px;border-bottom:1px solid #d8d6cd;}" +
+    ".cell.gap{background:repeating-linear-gradient(135deg,#f3f2ee 0 4px,#fff 4px 8px);}" +
+    ".cell.removed{background:#faece7;}.cell.removed .block-p,.cell.removed .block-li,.cell.removed .block-heading,.cell.removed .row-cells{color:#7a2c11;text-decoration:line-through;}" +
+    ".cell.added{background:#e1f5ee;}.cell.added .block-p,.cell.added .block-li,.cell.added .block-heading,.cell.added .row-cells{color:#0b5544;}" +
+    ".cell.fmt-changed{background:#fdf7e6;box-shadow:inset 3px 0 0 #e8c766;}" +
+    ".del{background:#f6d5cb;color:#7a2c11;text-decoration:line-through;}.ins{background:#c4ecdc;color:#0b5544;}.ws-dot{opacity:.6;}" +
+    ".block-p,.block-li,.block-heading{margin:0 0 8pt;min-height:1.35em;}" +
+    ".block-heading{font-weight:700;margin-top:10pt;}.block-heading.h1{font-size:16pt;}.block-heading.h2{font-size:14pt;}.block-heading.h3{font-size:12pt;}.block-heading.styled{font-weight:400;font-size:inherit;}" +
+    ".block-li{display:flex;gap:8px;align-items:baseline;margin-bottom:4pt;}.li-bullet{flex:none;min-width:14pt;}.li-text{min-width:0;flex:1;}" +
+    ".block-divider{display:flex;align-items:center;gap:8px;margin:14px 0 8px;color:#8a897f;font:10px Helvetica,Arial,sans-serif;letter-spacing:.06em;}.block-divider:before,.block-divider:after{content:'';flex:1;border-top:1px dashed #b9b7ab;}" +
+    ".row-cells{display:flex;border:1px solid #555;margin-top:-1px;}.cell.is-row{display:flex;flex-direction:column;}.cell.is-row>.row-cells{flex:1;}.cell.table-start{padding-top:4pt;}.cell.table-end{padding-top:8pt;}" +
+    ".row-cell{flex:1 1 0;min-width:0;padding:3pt 5pt;border-left:1px solid #555;}.row-cell:first-child{border-left:none;}" +
+    ".sec-badge{font:9px Helvetica,Arial,sans-serif;text-transform:uppercase;color:#8a897f;margin-right:6px;vertical-align:1px;}" +
+    ".fmt-tag{display:inline-block;margin-left:8px;font:600 9px Helvetica,Arial,sans-serif;text-transform:uppercase;color:#8a6d1a;background:#fbf0d2;border-radius:3px;padding:1px 5px;white-space:nowrap;}" +
+    ".inline-img img{max-width:100%;height:auto;vertical-align:middle;}" +
+    ".trk-ins{text-decoration:underline wavy #1d9e75;}.trk-del{text-decoration:line-through;color:#8a4634;opacity:.85;}" +
+    ".doc-link{color:#3c3489;text-decoration:underline;}.fn-ref,.fn-marker{font-size:.75em;line-height:0;}.fn-ref a,.fn-marker a{color:#3c3489;text-decoration:none;}";
+
   function exportDiff() {
     if (!lastDiffHtml) return;
     var doc =
-      '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>docxDiff export</title><style>' +
-      "body{font-family:-apple-system,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.7;margin:0;padding:24px;background:#fafaf8;color:#1a1a18;}" +
-      ".diff-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);border:1px solid #e3e1d9;border-radius:8px;overflow:hidden;background:#fff;}" +
-      ".cell{padding:9px 20px;border-bottom:1px solid #e3e1d9;white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;min-width:0;}" +
-      ".cell:nth-child(2n){border-left:1px solid #e3e1d9;}" +
-      ".cell.removed{background:#faece7;}.cell.removed .block-p,.cell.removed .block-li,.cell.removed .block-heading{color:#7a2c11;text-decoration:line-through;}" +
-      ".cell.added{background:#e1f5ee;}.cell.added .block-p,.cell.added .block-li,.cell.added .block-heading{color:#0b5544;}" +
-      ".cell.fmt-changed{background:#fdf7e6;box-shadow:inset 3px 0 0 #e8c766;}" +
-      ".del{background:#faece7;color:#7a2c11;text-decoration:line-through;border-radius:3px;padding:0 2px;}" +
-      ".ins{background:#e1f5ee;color:#0b5544;border-radius:3px;padding:0 2px;}" +
-      ".ws-dot{opacity:.6;}" +
-      ".block-heading{font-weight:600;}.block-heading.h1{font-size:17px;}.block-heading.h2{font-size:15px;}" +
-      ".block-li{display:flex;gap:7px;}.block-divider{text-align:center;color:#9a9990;font-size:10.5px;letter-spacing:.06em;}" +
-      ".row-cells{display:flex;margin:0 -20px;}.row-cell{flex:1;min-width:0;padding:0 12px;border-right:1px dashed #e3e1d9;}.row-cell:first-child{padding-left:20px;}.row-cell:last-child{border-right:none;padding-right:20px;}" +
-      ".sec-badge{display:inline-block;font-size:9.5px;font-weight:600;text-transform:uppercase;background:#f4f3ee;color:#9a9990;border:1px solid #cfcdc2;border-radius:4px;padding:1px 5px;margin-right:7px;}" +
-      ".fmt-tag{display:inline-block;margin-left:8px;font-size:10px;font-weight:600;text-transform:uppercase;color:#8a6d1a;background:#fbf0d2;border-radius:4px;padding:1px 6px;}" +
-      ".inline-img img{max-height:60px;max-width:170px;border:1px solid #cfcdc2;border-radius:4px;vertical-align:middle;}" +
-      ".trk-ins{text-decoration:underline wavy #1d9e75;}.trk-del{text-decoration:line-through;color:#8a4634;opacity:.85;}" +
-      ".doc-link{color:#3c3489;text-decoration:underline;}" +
+      '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>diffPad export</title><style>' +
+      EXPORT_CSS +
       '</style></head><body><h2 style="font-weight:500;">' +
       escapeHtml(state.left.fileName) +
       " &rarr; " +
       escapeHtml(state.right.fileName) +
       "</h2>" +
-      '<div class="diff-grid">' +
+      '<div class="diff-grid doc-sheet">' +
       lastDiffHtml +
       "</div></body></html>";
     var blob = new Blob([doc], { type: "text/html" });
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
     a.href = url;
-    a.download = "docxdiff-export.html";
+    a.download = "diffpad-export.html";
     // The anchor has to be in the document for the click to count in
     // Firefox, and the object URL has to outlive the click: revoking it
     // on the next line races the download the click has only just

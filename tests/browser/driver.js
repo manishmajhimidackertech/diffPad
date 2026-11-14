@@ -248,7 +248,7 @@
     await new Promise((r) => setTimeout(r, 50));
     const app = $("app");
     const main = app.querySelector(".diff-scroll");
-    /* One DiffPad window per document; the diff lies over both pages. */
+    /* One diffPad window per document; the diff lies over both pages. */
     const wins = app.querySelectorAll(".window");
     const scrollbarOf = (el) => {
       const r = el.getBoundingClientRect();
@@ -380,7 +380,7 @@
       return null;
     });
 
-    /* Export diff is in each DiffPad window's File menu. */
+    /* Export diff is in each diffPad window's File menu. */
     const exportItem = app.querySelector(
       '.window[data-win="right"] .menu-item[data-action="export"]',
     );
@@ -391,7 +391,7 @@
     check("Export diff produces a download", () => {
       if (!downloads.length) throw new Error("no download was started");
       const d = downloads[0];
-      if (d.name !== "docxdiff-export.html") {
+      if (d.name !== "diffpad-export.html") {
         throw new Error("the file was named " + JSON.stringify(d.name));
       }
       if (!d.inDocument) {
@@ -440,7 +440,7 @@
 
     /*
      * The games in the Start menu. Each opens in a window of its own, above
-     * the two DiffPad windows, with a taskbar button and working minimize,
+     * the two diffPad windows, with a taskbar button and working minimize,
      * maximize and close buttons.
      */
     const layer = $("game-layer");
@@ -480,7 +480,7 @@
       };
     });
 
-    check("a game window lies above the DiffPad windows", () => {
+    check("a game window lies above the diffPad windows", () => {
       const r = gameWins.solitaire.getBoundingClientRect();
       const hit = document.elementFromPoint(
         r.left + r.width / 2,
@@ -493,7 +493,7 @@
         );
       }
       if (!document.body.classList.contains("game-focus"))
-        throw new Error("the DiffPad windows still look active");
+        throw new Error("the diffPad windows still look active");
       return null;
     });
 
@@ -568,7 +568,120 @@
       if (left || tasks)
         throw new Error(left + " windows and " + tasks + " buttons left");
       if (document.body.classList.contains("game-focus"))
-        throw new Error("the DiffPad windows did not get focus back");
+        throw new Error("the diffPad windows did not get focus back");
+      return null;
+    });
+
+    /*
+     * The other formats. Each reader is plain script with no library behind
+     * it, and the Node suite runs all but one of them; what is confirmed here
+     * is that they load from their relative paths, that a real File reaches
+     * them, and that the browser's own TextDecoder, DOMParser and btoa do
+     * what the stand-ins do. HTML is the one reader only a browser can run.
+     */
+    async function compare(leftName, leftB64, rightName, rightB64) {
+      chooseFile("file-input-left", leftName, leftB64);
+      chooseFile("file-input-right", rightName, rightB64);
+      const titles = () =>
+        Array.from(document.querySelectorAll("#app .title-text")).map(
+          (t) => t.textContent,
+        );
+      const shown = await waitFor(() => {
+        const t = titles();
+        return (
+          t.length === 2 &&
+          t[0] === leftName + " - diffPad" &&
+          t[1] === rightName + " - diffPad" &&
+          !!$("removed-count")
+        );
+      }, 15000);
+      const errors = Array.from(document.querySelectorAll(".dz-error"))
+        .map((e) => e.textContent)
+        .filter(Boolean);
+      if (!shown || errors.length) {
+        throw new Error(
+          "not shown. titles " + JSON.stringify(titles()) + " errors " + JSON.stringify(errors),
+        );
+      }
+      return {
+        removed: $("removed-count").textContent,
+        added: $("added-count").textContent,
+        fmt: $("fmt-count").textContent,
+      };
+    }
+
+    const NODE_COUNTS = {
+      doc: { removed: "11", added: "21", fmt: "3" },
+      rtf: { removed: "11", added: "21", fmt: "3" },
+      odt: { removed: "12", added: "21", fmt: "3" },
+      fodt: { removed: "10", added: "20", fmt: "3" },
+    };
+    for (const kind of Object.keys(NODE_COUNTS)) {
+      let got = null,
+        failure = null;
+      try {
+        got = await compare(
+          "report_v1." + kind,
+          window.__fixtures[kind + "_v1"],
+          "report_v2." + kind,
+          window.__fixtures[kind + "_v2"],
+        );
+      } catch (err) {
+        failure = err;
+      }
+      check("a pair of ." + kind + " files is compared, as the Node suite compares it", () => {
+        if (failure) throw failure;
+        const want = NODE_COUNTS[kind];
+        if (JSON.stringify(got) !== JSON.stringify(want)) {
+          throw new Error("expected " + JSON.stringify(want) + ", got " + JSON.stringify(got));
+        }
+        if (!$("app").querySelector(".row-cells") || !$("app").querySelector(".block-heading"))
+          throw new Error("the table and the headings were not drawn");
+        if (!$("app").querySelector('.inline-img img[src^="data:image/png"]'))
+          throw new Error("the picture was not drawn");
+        return got;
+      });
+    }
+
+    const b64 = (text) => btoa(unescape(encodeURIComponent(text)));
+    const page = (item, extra) =>
+      "<!doctype html><html><head><title>not text</title><style>p{color:red}</style>" +
+      "<script>window.__ranFromDocument = true;<\/script></head><body>" +
+      "<h1>Minutes</h1><p>Present: <b>Ann</b>, <i>Bob</i> and <a href='https://example.com/c'>Cy</a>.</p>" +
+      "<ol><li>First point</li><li>" + item + "</li></ol>" +
+      "<table><tr><th>Item</th><th>Owner</th></tr><tr><td>Budget</td><td>Ann</td></tr></table>" +
+      "<img src='https://example.com/never-loaded.png' onerror='window.__ranFromDocument = true'>" +
+      extra + "</body></html>";
+    let htmlCounts = null,
+      htmlFailure = null;
+    try {
+      htmlCounts = await compare(
+        "minutes_v1.html",
+        b64(page("Second point", "")),
+        "minutes_v2.html",
+        b64(page("Second point, revised", "<p>Added at the end.</p>")),
+      );
+    } catch (err) {
+      htmlFailure = err;
+    }
+    check("two HTML pages are compared by their structure", () => {
+      if (htmlFailure) throw htmlFailure;
+      const want = { removed: "1", added: "2", fmt: "0" };
+      if (JSON.stringify(htmlCounts) !== JSON.stringify(want))
+        throw new Error("expected " + JSON.stringify(want) + ", got " + JSON.stringify(htmlCounts));
+      const app = $("app");
+      if (!app.querySelector(".block-heading.h1")) throw new Error("no heading");
+      if (app.querySelectorAll(".row-cells").length !== 4) throw new Error("the table's rows were not drawn");
+      const numbers = Array.from(app.querySelectorAll(".li-number")).map((n) => n.textContent);
+      if (numbers.join(" ") !== "1. 1. 2. 2.") throw new Error("list numbers: " + numbers.join(" "));
+      if (!app.querySelector('.doc-link[data-href="https://example.com/c"]')) throw new Error("no link");
+      if (app.textContent.indexOf("not text") !== -1 || app.textContent.indexOf("color:red") !== -1)
+        throw new Error("the page's title or stylesheet was read as text");
+      return htmlCounts;
+    });
+    check("an HTML document is read, never run and never loaded", () => {
+      if (window.__ranFromDocument) throw new Error("script from the document ran");
+      if ($("app").querySelector('img[src^="http"]')) throw new Error("a remote image was put in the page");
       return null;
     });
 

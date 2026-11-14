@@ -158,7 +158,7 @@ function loadFromCode(code, opts, filename) {
   for (const id of [
     "app",
     "reset-btn",
-    // The taskbar's DiffPad buttons.
+    // The taskbar's diffPad buttons.
     "tasks",
     // The baseline page had one status bar and one Export button for the
     // whole diff; the current one keeps its counts in the windows' status
@@ -267,6 +267,11 @@ function loadFromCode(code, opts, filename) {
     // export's deferred revokeObjectURL is the one that matters: node waits
     // for a pending timer, so without unref every test file that exports once
     // sat for the length of that delay before exiting.
+    // What the readers use to turn bytes into text and pictures into data:
+    // URLs. Both are in every browser and in node.
+    TextDecoder,
+    btoa,
+    atob,
     setTimeout: (fn, ms) => {
       const t = setTimeout(fn, ms);
       if (t && typeof t.unref === "function") t.unref();
@@ -278,6 +283,16 @@ function loadFromCode(code, opts, filename) {
   sandbox.globalThis = sandbox;
 
   const ctx = vm.createContext(sandbox);
+  // The readers for the formats other than .docx are scripts of their own,
+  // loaded before the application as index.html loads them. Each registers
+  // itself on window.diffPadFormats and exposes nothing else.
+  if (!options.withoutFormats) {
+    for (const f of formatScripts()) {
+      vm.runInContext(fs.readFileSync(f, "utf8"), ctx, {
+        filename: path.relative(ROOT, f),
+      });
+    }
+  }
   vm.runInContext(code, ctx, { filename: filename || "js/app.js" });
 
   const api = {
@@ -286,7 +301,7 @@ function loadFromCode(code, opts, filename) {
     app: element("app"),
     resetBtn: element("reset-btn"),
     /**
-     * Choose a command from a DiffPad window's File or Help menu, as a click
+     * Choose a command from a diffPad window's File or Help menu, as a click
      * on it would: the click goes to #app's own handler, the way it bubbles
      * up from the menu item in the page.
      */
@@ -359,8 +374,22 @@ function loadFromCode(code, opts, filename) {
     async blocks(buf, name) {
       return ctx.extractDocxStructured(makeFile(name || "doc.docx", buf));
     },
+    /** Read a file of any kind the page accepts, as opening it would. */
+    async read(buf, name) {
+      return ctx.readDocument(makeFile(name, buf));
+    },
   };
   return api;
+}
+
+function formatScripts() {
+  const dir = path.join(ROOT, "js", "formats");
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(".js"))
+    .sort()
+    .map((f) => path.join(dir, f));
 }
 
 function loadApp(opts) {
@@ -372,10 +401,32 @@ function loadApp(opts) {
 }
 
 function loadOriginal() {
-  return loadFromSource(git(["show", baselineCommit() + ":index.html"]));
+  return loadFromSource(git(["show", baselineCommit() + ":index.html"]), {
+    withoutFormats: true,
+  });
+}
+
+// The reproductions in original.test.js run against the page as it was
+// when it was a single file with its script inline. A copy of this project
+// whose history starts later does not have that page: its first commit
+// already loads js/app.js. There the reproductions have nothing to run
+// against, and are skipped -- by name, with this reason -- rather than
+// reported as failures of the code.
+const BASELINE_MISSING =
+  "the one-file page these reproductions run against is not in this repository's history";
+
+function baselineAvailable() {
+  try {
+    extractScript(git(["show", baselineCommit() + ":index.html"]));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 module.exports = {
+  baselineAvailable,
+  BASELINE_MISSING,
   loadApp,
   loadOriginal,
   loadFromSource,

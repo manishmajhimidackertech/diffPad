@@ -19,7 +19,7 @@
   flex: none;
 }
 
-/* While a game is the active window, the DiffPad windows are not. */
+/* While a game is the active window, the diffPad windows are not. */
 body.game-focus #app .window .titlebar {
   background: var(--title-off);
   color: var(--face);
@@ -672,6 +672,7 @@ fieldset.group95 legend {
   width: 32px;
   height: 32px;
   margin: 1px;
+  /* Drawn looking right; turned to look left. */
   transform: scaleX(-1);
 }
 .fc-king.right svg {

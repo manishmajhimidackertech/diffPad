@@ -5,10 +5,16 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { loadApp, loadOriginal } = require("./harness.js");
+const {
+  loadApp,
+  loadOriginal,
+  baselineAvailable,
+  BASELINE_MISSING,
+} = require("./harness.js");
 
 const app = loadApp();
-const original = loadOriginal();
+// Null where this repository's history does not hold the original page.
+const original = baselineAvailable() ? loadOriginal() : null;
 
 const IMG = "￼";
 const FN = "�";
@@ -134,7 +140,7 @@ test("the large path returns a shortest edit script on 2000 random pairs", () =>
   }
 });
 
-test("below the table limit the output is byte-identical to the original's", () => {
+test("below the table limit the output is byte-identical to the original's", { skip: original ? false : BASELINE_MISSING }, () => {
   // The whole point of keeping the table for small inputs: every document
   // anyone has diffed with this tool must still diff exactly the same way.
   for (let t = 0; t < 1500; t++) {

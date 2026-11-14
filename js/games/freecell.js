@@ -285,23 +285,48 @@
 
   // ---------------------------------------------------------------- game window
 
+  // Two cards on the felt, the front one a king: drawn on a 32 x 32 grid, so
+  // it holds up in the Start menu and still reads at 16 in a title bar.
   var ICON =
-    '<svg viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true">' +
-    '<path d="M1 1h14v14H1z" fill="#008000"/><path d="M2 2h5v6H2zM9 2h5v6H9z" fill="none" stroke="#004000"/>' +
-    '<path d="M3.5 9.5h7v6h-7z" fill="#fff" stroke="#000"/><path d="M7 11l1.5 2L7 15l-1.5-2z" fill="#d40000"/>' +
-    '<path d="M6 3h4v1H6z" fill="#ff0"/></svg>';
+    '<svg viewBox="0 0 32 32" aria-hidden="true">' +
+    '<path d="M1.5 3.5h29v25h-29z" fill="#008000" stroke="#003c00"/>' +
+    '<path d="M2.5 27.5v-23h27" fill="none" stroke="#00b000"/>' +
+    '<g transform="rotate(-13 11 17)"><path d="M4.5 7.5h12v18h-12z" fill="#fff" stroke="#000"/>' +
+    '<path d="M10.5 11.5l3.5 5-3.5 5-3.5-5z" fill="#d40000"/></g>' +
+    '<path d="M13.5 5.5h14v21h-14z" fill="#fff" stroke="#000"/>' +
+    '<path d="M16.5 15.5h8v4.5q0 4-4 4t-4-4z" fill="#f8d5ab" stroke="#000" stroke-width=".8"/>' +
+    '<path d="M16.5 19.5q0 5.5 4 5.5t4-5.5q-2 2-4 2t-4-2z" fill="#fff" stroke="#000" stroke-width=".8"/>' +
+    '<path d="M16 15.5l-.8-6 3 2.5 2.3-3.5 2.3 3.5 3-2.5-.8 6z" fill="#f6c40e" stroke="#000" stroke-width=".8" stroke-linejoin="round"/>' +
+    '<path d="M18 17h1.5v1.5H18zM21.5 17H23v1.5h-1.5z"/>' +
+    '<path d="M19.8 12.7h1.4v1.4h-1.4z" fill="#d40000"/></svg>';
 
+  // The king who sits between the cells, drawn looking to the right; the
+  // stylesheet turns him to face whichever side the pointer is on.
   function kingSVG(happy) {
+    var o = 'stroke="#151515" stroke-width=".8" stroke-linejoin="round"';
     return (
-      '<svg viewBox="0 0 32 32" shape-rendering="crispEdges" aria-hidden="true">' +
-      '<path d="M8 4h2v2h2V3h2v3h4V3h2v3h2V4h2v8H8z" fill="#ffd800" stroke="#000" stroke-width=".8"/>' +
-      '<path d="M9 12h14v9q0 5-7 6-7-1-7-6z" fill="#ffd0a0" stroke="#000" stroke-width=".8"/>' +
-      '<path d="M18 15h3v2h-3z" fill="#000"/><path d="M21 15h1v1h-1z" fill="#fff"/>' +
+      '<svg viewBox="0 0 32 32" aria-hidden="true">' +
+      // Hair at the back of the head, and the ear in front of it.
+      '<path d="M9.5 11.5Q4 15.5 5.5 23q1 3.5 4.5 3.5l2-13z" fill="#8a5a2b" ' + o + "/>" +
+      // The face in three-quarter view: brow, nose, chin.
+      '<path d="M9.5 12h14q1.3 2.8.7 5.2l2.6 3.5q.3 1.3-1.9 1.3l-.3 2.5Q22.5 29.5 16 29.5 9.5 28 9.5 21z" fill="#f8d5ab" ' + o + "/>" +
+      '<path d="M10.8 16.5q-2-.3-1.9 2 .1 2 2.1 1.9" fill="#f8d5ab" ' + o + "/>" +
+      // The beard, from the ear round under the chin.
+      '<path d="M10 20.5Q8.5 30.5 17 31q6.5 0 7.8-6.3-3.3 2.3-7.3 1.3-4.5-1.3-5.5-6.5z" fill="#fff" ' + o + "/>" +
       (happy
-        ? '<path d="M14 21q4 4 8 0" fill="none" stroke="#c00000" stroke-width="1.4"/>'
-        : '<path d="M15 22h6" stroke="#c00000" stroke-width="1.4"/>') +
-      '<path d="M9 20q0 9 7 9t7-9q-3 4-7 4t-7-4z" fill="#fff" stroke="#000" stroke-width=".8"/>' +
-      '<path d="M13 8h2v2h-2zM19 8h2v2h-2z" fill="#c00000"/></svg>'
+        ? '<path d="M17.5 24.2q3.5 2.8 6.5-.2" fill="#fff" stroke="#c00000" stroke-width="1.2" stroke-linecap="round"/>'
+        : '<path d="M18.5 24.8h4.5" stroke="#c00000" stroke-width="1.2" stroke-linecap="round"/>') +
+      '<path d="M15.2 22.6q4.8-2.6 10.3-.4-5 2.6-10.3.4z" fill="#fff" ' + o + "/>" +
+      // The eye, looking the way he faces.
+      '<ellipse cx="20.2" cy="16.8" rx="1.9" ry="1.7" fill="#fff" stroke="#151515" stroke-width=".6"/>' +
+      '<circle cx="21" cy="16.9" r="1"/>' +
+      (happy
+        ? '<path d="M17.3 14.2q2.8-2 5.9-.5" fill="none" stroke="#151515" stroke-width="1" stroke-linecap="round"/>'
+        : '<path d="M17.3 14.6q2.9-1.2 5.9-.3" fill="none" stroke="#151515" stroke-width="1" stroke-linecap="round"/>') +
+      // The crown.
+      '<path d="M8 12.5L6.5 3.5l4.5 4 2.5-5 3 5 3-5 2.5 5 4.5-4L25 12.5z" fill="#f6c40e" ' + o + "/>" +
+      '<path d="M8 10h17" fill="none" stroke="#151515" stroke-width=".6"/>' +
+      '<circle cx="12" cy="11.2" r=".9" fill="#d40000"/><circle cx="16.5" cy="11.2" r=".9" fill="#1d4fc6"/><circle cx="21" cy="11.2" r=".9" fill="#d40000"/></svg>'
     );
   }
 
@@ -686,7 +711,7 @@
         "<b>FreeCell</b><br/><br/>Move every card to the four home cells, building each suit up from the Ace. " +
           "On the table, build down in alternating colours. The four free cells each hold one card.<br/><br/>" +
           "Click a column, then where it should go -- or drag. Double-click a card to put it in a free cell.<br/><br/>" +
-          "Part of docxDiff. Everything runs in this browser.",
+          "Part of diffPad. Everything runs in this browser.",
         { title: "About FreeCell" },
       );
     }
