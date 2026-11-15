@@ -559,6 +559,48 @@
       return null;
     });
 
+    /*
+     * A diffPad window picked from the taskbar comes in front of the games,
+     * and only that one: with Solitaire maximized over both, the Original
+     * window shows through it and the Updated window stays covered.
+     */
+    sol.querySelector('[data-wm="max"]').click();
+    const middleOf = (side) => {
+      const r = document
+        .querySelector('#app .window[data-win="' + side + '"]')
+        .getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        r.left + r.width / 2,
+        r.top + r.height / 2,
+      );
+      return hit && hit.closest(".game-window") ? "game" : "diffPad";
+    };
+    const covered = { left: middleOf("left"), right: middleOf("right") };
+    $("tasks").querySelector('[data-task="left"]').click();
+    const raised = {
+      left: middleOf("left"),
+      right: middleOf("right"),
+      gameFocus: document.body.classList.contains("game-focus"),
+    };
+    solTask.click();
+    const back = { left: middleOf("left"), right: middleOf("right") };
+    sol.querySelector('[data-wm="max"]').click();
+
+    check("a diffPad window picked from the taskbar comes forward alone", () => {
+      const got = { covered, raised, back };
+      if (
+        covered.left !== "game" ||
+        covered.right !== "game" ||
+        raised.left !== "diffPad" ||
+        raised.right !== "game" ||
+        raised.gameFocus ||
+        back.left !== "game" ||
+        back.right !== "game"
+      )
+        throw new Error(JSON.stringify(got));
+      return got;
+    });
+
     for (const id of games)
       gameWins[id].querySelector('[data-wm="close"]').click();
 
