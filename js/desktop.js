@@ -6,6 +6,8 @@
  * by its title bar, resized from its edges, minimized to the taskbar,
  * maximized over the desktop and closed. Game windows live in their own layer
  * above the two diffPad windows, so the diff underneath is never disturbed.
+ * A diffPad window that is clicked, or picked from the taskbar, still comes
+ * to the front: the game windows it passes are cut away where it lies.
  *
  * Nothing here touches the diff. js/app.js owns #app, the diffPad taskbar
  * buttons and Start over; this file owns #game-layer, #game-tasks and the
@@ -110,6 +112,78 @@
         d.el.style.zIndex = String(11 + i * 2);
       });
     });
+    applyClips();
+  }
+
+  // The game layer is drawn above both diffPad windows, and the diff lies
+  // across the two of them in one scroller, so a diffPad window cannot be
+  // lifted over a game by z-index. Instead each game window remembers which
+  // diffPad windows have been brought in front of it (win.under), and is
+  // clipped to leave those windows' rectangles showing. A clipped-away part
+  // takes no clicks either, so they land on the diffPad window that shows.
+  function padRect(side) {
+    var el = document.querySelector('#app .window[data-win="' + side + '"]');
+    var r = el && el.getBoundingClientRect();
+    return r && r.width && r.height ? r : null;
+  }
+
+  function clip(el, holes) {
+    if (!holes.length) {
+      if (el.style.clipPath) el.style.clipPath = "";
+      return;
+    }
+    var r = el.getBoundingClientRect();
+    // Far wider than the element, so menus and outlines that reach past its
+    // edge are kept; the holes are cut out of it by the even-odd rule.
+    var d = "M-9999 -9999H19999V19999H-9999Z";
+    holes.forEach(function (h) {
+      d +=
+        "M" +
+        (h.left - r.left) +
+        " " +
+        (h.top - r.top) +
+        "h" +
+        h.width +
+        "v" +
+        h.height +
+        "h" +
+        -h.width +
+        "Z";
+    });
+    el.style.clipPath = 'path(evenodd, "' + d + '")';
+  }
+
+  function applyClips() {
+    var rects = { left: padRect("left"), right: padRect("right") };
+    wins.forEach(function (w) {
+      if (w.minimized) return;
+      var holes = [];
+      if (w.under.left && rects.left) holes.push(rects.left);
+      if (w.under.right && rects.right) holes.push(rects.right);
+      clip(w.el, holes);
+      w.dialogs.forEach(function (d) {
+        clip(d.el, holes);
+      });
+    });
+  }
+
+  // Bring one diffPad window in front of every game window. The other
+  // diffPad window stays where it was in the order.
+  function raisePad(side) {
+    if (side !== "left" && side !== "right") return;
+    wins.forEach(function (w) {
+      w.under[side] = true;
+    });
+    setActive(null);
+    applyClips();
+  }
+
+  // The game window to activate when the active one goes away. If a diffPad
+  // window lies over the next game down, that diffPad window is the one on
+  // top, and no game is active.
+  function nextActive(except) {
+    var w = topVisible(except);
+    return w && !w.under.left && !w.under.right ? w : null;
   }
 
   // Win95 shows exactly one active window. When it is a game, the diffPad
@@ -133,6 +207,7 @@
     if (!win || win.minimized) return;
     wins.splice(wins.indexOf(win), 1);
     wins.push(win);
+    win.under = { left: false, right: false };
     restack();
     setActive(win);
   }
@@ -268,6 +343,8 @@
       dialogs: [],
       menus: [],
       instance: null,
+      // The diffPad windows that have been brought in front of this one.
+      under: { left: false, right: false },
     };
 
     win.setTitle = function (text) {
@@ -321,6 +398,7 @@
       var y = Math.max(0, Math.min(el.offsetTop, s.h - el.offsetHeight));
       el.style.left = x + "px";
       el.style.top = y + "px";
+      applyClips();
     };
     win.isActive = function () {
       return active === win && !win.minimized;
@@ -373,6 +451,7 @@
     if (typeof ResizeObserver === "function") {
       win.observer = new ResizeObserver(function () {
         if (win.instance.onResize) win.instance.onResize();
+        applyClips();
       });
       win.observer.observe(win.body);
     }
@@ -382,14 +461,17 @@
   function wireWindow(win) {
     var el = win.el;
 
-    el.addEventListener("mousedown", function () {
-      if (active !== win && !win.dialogs.length) focusWin(win);
-    });
+    function toFront() {
+      if (win.dialogs.length) return;
+      if (active !== win || win.under.left || win.under.right) focusWin(win);
+    }
+    el.addEventListener("mousedown", toFront);
+    // A game that takes over a press on its board (to drag a card, say)
+    // cancels the mousedown that would follow, so the press is caught first.
+    el.addEventListener("pointerdown", toFront, true);
     el.addEventListener(
       "touchstart",
-      function () {
-        if (active !== win && !win.dialogs.length) focusWin(win);
-      },
+      toFront,
       { passive: true },
     );
 
@@ -458,6 +540,7 @@
   function track(onMove, onUp) {
     function move(e) {
       onMove(e);
+      applyClips();
     }
     function up(e) {
       document.removeEventListener("pointermove", move);
@@ -539,7 +622,7 @@
       d.el.classList.add("minimized");
     });
     if (win.instance.onMinimize) win.instance.onMinimize();
-    if (active === win) setActive(topVisible(win));
+    if (active === win) setActive(nextActive(win));
     else setActive(active);
   }
 
@@ -552,6 +635,7 @@
     });
     zoom(win.task.getBoundingClientRect(), win.el.getBoundingClientRect());
     if (win.instance.onRestore) win.instance.onRestore();
+    applyClips();
   }
 
   function toggleMax(win) {
@@ -562,6 +646,7 @@
     btn.innerHTML = win.maximized ? GLYPH.restore : GLYPH.max;
     btn.title = win.maximized ? "Restore" : "Maximize";
     btn.setAttribute("aria-label", btn.title);
+    applyClips();
   }
 
   function closeWin(win) {
@@ -574,7 +659,7 @@
     win.task.parentNode.removeChild(win.task);
     wins.splice(wins.indexOf(win), 1);
     restack();
-    setActive(active === win ? topVisible() : active);
+    setActive(active === win ? nextActive() : active);
   }
 
   // ---------------------------------------------------------------- dialogs
@@ -776,9 +861,36 @@
       if (!w.el.contains(t)) closeMenus(w);
     });
     // A click on a diffPad window, or on its taskbar button, makes it the
-    // active window again.
-    if (t.closest("#app") || t.closest("#tasks")) setActive(null);
+    // active window again and brings that one window, not its neighbour, in
+    // front of the games. js/app.js reads the side of a click the same way.
+    var task = t.closest("#tasks .task");
+    var app = t.closest("#app");
+    if (task) {
+      raisePad(task.getAttribute("data-task"));
+    } else if (app) {
+      var r = app.getBoundingClientRect();
+      raisePad(e.clientX < r.left + r.width / 2 ? "left" : "right");
+    } else if (t.closest("#tasks")) {
+      setActive(null);
+    }
   });
+
+  // The taskbar buttons also answer the keyboard, which sends no mousedown.
+  var padTasks = document.getElementById("tasks");
+  if (padTasks) {
+    padTasks.addEventListener("click", function (e) {
+      var task = e.target.closest(".task");
+      if (task) raisePad(task.getAttribute("data-task"));
+    });
+  }
+
+  // The diffPad windows move when the browser is resized, and are drawn anew
+  // when a document is opened or the diff is made.
+  window.addEventListener("resize", applyClips);
+  var appEl = document.getElementById("app");
+  if (appEl && typeof MutationObserver === "function") {
+    new MutationObserver(applyClips).observe(appEl, { childList: true });
+  }
 
   document.addEventListener("keydown", function (e) {
     if (e.ctrlKey && e.key === "Escape") {
